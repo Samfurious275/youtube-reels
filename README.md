@@ -6,9 +6,10 @@ Give it a link. It picks the best stretches of the video, **removes the voices o
 the people talking**, keeps the music and sound effects, puts an **AI narrator**
 over the top, and burns **karaoke captions** into a 1080×1920 frame.
 
-Everything runs on your own machine and everything is free. **There are no API
-keys anywhere in this project** — no Claude, no OpenAI, nothing to sign up for
-and nothing to pay for.
+Everything is free. **There are no API keys anywhere in this project** — no
+Claude, no OpenAI, nothing to sign up for and nothing to pay for. The pipeline
+runs on your own machine; the one step that reaches the internet is the narrator
+voice, which uses Microsoft's free Edge voices (no account, no key).
 
 ```bash
 ./run.sh "https://www.youtube.com/watch?v=XXXX" --plan   # see what it would cut
@@ -34,6 +35,7 @@ Or use the web page, and send the link to someone else:
 - [Using the web page](#using-the-web-page)
 - [Sharing it with other people](#sharing-it-with-other-people)
 - [Getting better results](#getting-better-results)
+- [Narration](NARRATION.md) — what you need, and how to make it good
 - [All the options](#all-the-options)
 - [How long it takes](#how-long-it-takes)
 - [Troubleshooting](#troubleshooting)
@@ -328,6 +330,12 @@ not running it quietly falls back to extractive rather than failing the render.
 
 **Pick a voice you like.** `--list-voices` shows them all; the multilingual ones
 sound the most natural and are listed first.
+
+**You can also write the narration yourself.** Every script is cached as a plain
+text file that the pipeline reads back verbatim, so you can rewrite one and
+re-run to have it spoken and captioned. See **[NARRATION.md](NARRATION.md)** for
+that workflow, choosing a voice, how reel length is decided, and what to do when
+the narration comes out badly.
 
 ---
 

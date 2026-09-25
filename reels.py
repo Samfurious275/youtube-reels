@@ -1210,6 +1210,9 @@ def make_reels(target, a, progress=None):
     video, title, info = fetch(url, d, a.max_height)
     total = duration_of(video)
     print(f"  {title}  ({hhmmss(total)})")
+    # Worth printing: this is where the narration scripts live, and editing one
+    # by hand is the way to take the writing over from the generator.
+    print(f"  cache: {d}")
 
     print("\n[2/6] transcript")
     step(0.10, "Reading the transcript")
