@@ -1,0 +1,27 @@
+# Everything here is free and runs locally. No API keys anywhere in this project.
+
+# dialogue removal (Demucs splits voice from music/SFX)
+# Intel Macs: torch 2.2.2 is the last release with x86_64 macOS builds
+torch==2.2.2
+torchaudio==2.2.2
+numpy<2
+demucs==4.0.1
+soundfile
+
+# narration: free Microsoft Edge neural voices, and the word timings they
+# report are what the captions are synced to
+edge-tts>=6.1.9
+
+# caption rendering (this ffmpeg has no libass, so Pillow draws the text)
+pillow
+
+# the web page (serve.py). The command line does not need it, but it is cheap
+# next to torch and having it here means serve.sh / serve.bat work on a fresh
+# machine without a second install step.
+gradio>=4.44
+
+# only used when a video has no captions at all and the transcript has to be
+# made from scratch -- everything else in the pipeline skips these
+faster-whisper>=1.0.3
+ctranslate2<4.5          # last series with x86_64 macOS wheels
+onnxruntime              # faster-whisper's voice-activity filter
