@@ -1,0 +1,29 @@
+# The small install: about 370 MB instead of about 1.3 GB (measured, not guessed).
+#
+# What it leaves out is torch, Demucs, Whisper and their dependencies -- roughly
+# a gigabyte of machine-learning runtime that exists for exactly two jobs:
+#
+#   * removing the dialogue from the original audio  (needs Demucs + torch)
+#   * transcribing a video that has no captions       (needs Whisper)
+#
+# So with this install you must pass --no-bg, and you need a video that already
+# has captions -- which most YouTube videos do. Everything else is unchanged:
+# picking the stretches, the narration, the voice, the captions, the subtitles,
+# the vertical reframe and the web page all work exactly the same.
+#
+#   pip install -r requirements-lite.txt
+#   python reels.py "URL" --no-bg
+#
+# Change your mind later with:  pip install -r requirements.txt
+
+numpy<2
+
+# narration: free Microsoft Edge neural voices, and the word timings they
+# report are what the captions are synced to
+edge-tts>=6.1.9
+
+# caption rendering (this ffmpeg has no libass, so Pillow draws the text)
+pillow
+
+# the web page (serve.py); the command line does not need it
+gradio>=4.44

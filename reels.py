@@ -155,6 +155,38 @@ def save_json(path, data):
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+def dir_size(path):
+    path = Path(path)
+    if not path.exists():
+        return 0
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def human_size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def clean_cache():
+    """Throw away the working cache.
+
+    It holds the downloaded video and every intermediate wav, which is nearly
+    all of the disk this project uses -- the finished reels in output/ are tiny
+    beside it. Nothing here is precious: a later run re-downloads and redoes
+    whatever it needs. Finished reels and narration scripts live in output/ and
+    are left alone.
+    """
+    size = dir_size(WORK)
+    if not size:
+        print("Cache is already empty.")
+        return
+    shutil.rmtree(WORK, ignore_errors=True)
+    print(f"Freed {human_size(size)}. Your reels and scripts in output/ are untouched.")
+
+
 def hhmmss(seconds):
     h, rem = divmod(int(seconds), 3600)
     m, s = divmod(rem, 60)
@@ -411,7 +443,15 @@ def transcript(video, d, whisper_model):
     if not wav.exists():
         ffmpeg_cached(wav, "-i", video, "-vn", "-ac", "1", "-ar", "16000")
 
-    from faster_whisper import WhisperModel
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        sys.exit(
+            "This video has no captions, so the speech has to be transcribed --\n"
+            "  but Whisper is not installed. If you installed from\n"
+            "  requirements-lite.txt, that is expected. Either:\n"
+            "    * use a video that has captions (most YouTube videos do), or\n"
+            "    * install the full set:  pip install -r requirements.txt")
 
     mins = duration_of(video) / 60
     print(f"  no captions available -- transcribing {mins:.0f} min with Whisper "
@@ -621,6 +661,65 @@ def detect_letterbox(video, d, samples=6):
     return best
 
 
+def detect_caption_band(video, d, samples=14):
+    """Find subtitles burned into the source picture; return the rows they use.
+
+    No subtitle track can replace text that is part of the image -- the only way
+    to be rid of it is to paint over those pixels. Caption glyphs are bright and
+    carry a hard dark outline, a combination almost nothing else in a frame has,
+    so each row is scored by how many bright pixels sit within a few rows of a
+    dark one, and the rows that stand out are the band.
+
+    Frames are seeked to individually rather than filtered out of a full decode,
+    because a feature-length film would otherwise have to be decoded end to end
+    to sample a dozen pictures. Returns None when the source is clean.
+    """
+    import numpy as np
+
+    cache = d / "caption_band.json"
+    cached = load_json(cache)
+    if cached is not None:
+        return tuple(cached) if cached else None
+
+    w, h = video_size(video)
+    total = duration_of(video)
+    frames = []
+    for i in range(samples):
+        at = total * (0.10 + 0.8 * i / max(samples - 1, 1))
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", f"{at:.2f}", "-i", str(video),
+             "-frames:v", "1", "-vf", "format=gray", "-f", "rawvideo", "-"],
+            capture_output=True).stdout
+        if len(raw) >= w * h:
+            frames.append(np.frombuffer(raw[:w * h], dtype=np.uint8).reshape(h, w))
+
+    if not frames:
+        save_json(cache, None)
+        return None
+
+    f = np.stack(frames)
+    mid = f[:, :, int(w * 0.2):int(w * 0.8)]          # captions sit centred
+    bright, dark = mid > 240, mid < 40
+    outline = np.zeros_like(bright)
+    for s in range(1, 7):
+        outline[:, s:, :] |= dark[:, :-s, :]
+        outline[:, :-s, :] |= dark[:, s:, :]
+    score = (bright & outline).sum(axis=2).mean(axis=0)
+    score[:h // 2] = 0                                 # ignore the top half
+
+    if score.max() < 6:                                # nothing burned in
+        save_json(cache, None)
+        print("  no burned-in subtitles found in the source")
+        return None
+
+    rows = np.flatnonzero(score >= max(3.0, score.max() * 0.15))
+    pad = int(h * 0.015)
+    band = (max(0, int(rows.min()) - pad), min(h, int(rows.max()) + pad))
+    save_json(cache, list(band))
+    print(f"  covering burned-in subtitles in the source: rows {band[0]}-{band[1]}")
+    return band
+
+
 # ---------------------------------------------------------------- 4. script
 
 
@@ -735,13 +834,20 @@ def ollama_script(lines, span, target_words, model, host):
     return text or None
 
 
-def narration_for(lines, span, seconds, a, index, d):
-    """One reel's script, cached so re-renders never re-ask the model."""
-    cache = d / f"script-{index:02d}.txt"
+def narration_for(lines, span, seconds, a, index, scripts_dir):
+    """One reel's script, as an editable text file beside the finished reels.
+
+    Read back verbatim whenever the file already has something in it, which is
+    what makes rewriting one by hand work: edit it, run the same command again,
+    and it is spoken and captioned exactly as written. Delete the file to have
+    the generator try again.
+    """
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    cache = scripts_dir / f"reel-{index:02d}.txt"
     if cache.exists():
         text = cache.read_text(encoding="utf-8").strip()
         if text:
-            print(f"    cached script: {len(text.split())} words")
+            print(f"    script (yours): {len(text.split())} words")
             return text
 
     target = int(seconds * WORDS_PER_SECOND)
@@ -751,6 +857,12 @@ def narration_for(lines, span, seconds, a, index, d):
     if not text:
         text = extractive_script(lines, span, target)
     if not text:
+        # A stretch with no speech gives the generators nothing to work from.
+        # Leave an empty file rather than none at all: it is the difference
+        # between a reel you can rescue by writing the narration yourself and
+        # one that silently disappears.
+        cache.touch()
+        print("    script: empty (nothing said in this stretch)")
         return ""
     cache.write_text(text, encoding="utf-8")
     print(f"    script: {len(text.split())} words")
@@ -1044,8 +1156,17 @@ def background_bed(clip_audio, d, index, model):
 
     tmp = d / f"demucs-{index:02d}"
     print("    removing dialogue with Demucs (slow on CPU) ...")
-    run([sys.executable, "-m", "demucs", "--two-stems", "vocals",
-         "-n", model, "-o", str(tmp), str(clip_audio)])
+    try:
+        run([sys.executable, "-m", "demucs", "--two-stems", "vocals",
+             "-n", model, "-o", str(tmp), str(clip_audio)])
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        shutil.rmtree(tmp, ignore_errors=True)
+        sys.exit(
+            "Demucs could not run, so the dialogue cannot be removed.\n"
+            "  If you installed from requirements-lite.txt, that is expected --\n"
+            "  Demucs and torch are the big downloads it leaves out. Either:\n"
+            "    * add --no-bg to drop the original audio instead, or\n"
+            "    * install the full set:  pip install -r requirements.txt")
     produced = next(tmp.rglob("no_vocals.wav"), None)
     if produced is None:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1085,25 +1206,55 @@ def mix(bed, voice, d, index, bg_gain):
 # ---------------------------------------------------------------- 8. render
 
 
-def vertical_chain(crop, fit):
-    """Filter that turns a wide frame into a 1080x1920 one.
+def vertical_chain(crop, fit, band=None):
+    """Steps that turn a wide frame into a 1080x1920 one, ending at [v].
 
     blur keeps the whole frame and fills the dead space with a blown-up blurred
     copy of itself, which is what you want for anything widescreen -- a centre
     crop of a 2.39:1 shot throws away most of the composition. crop is there for
     footage that was already shot tight.
+
+    band, when given, is where subtitles are burned into the source picture, in
+    the source's own coordinates. Those pixels get blurred away before any
+    reframing, so the narration's captions are the only text on screen.
+
+    Returned as a list of statements rather than one string: each step names its
+    output, so the next one starts from a label and nothing has to guess whether
+    a comma or a label join is needed.
     """
     cw, ch, cx, cy = crop
-    base = f"crop={cw}:{ch}:{cx}:{cy}"
+    steps = [f"[0:v]crop={cw}:{ch}:{cx}:{cy}[src]"]
+    cur = "[src]"
+
+    if band:
+        # The band was measured on the full frame; the letterbox crop has since
+        # moved the origin, so shift it and clamp it into what is left.
+        y0 = max(0, band[0] - cy)
+        y1 = min(ch, band[1] - cy)
+        bh = y1 - y0
+        if bh > 4:
+            steps.append(f"{cur}split=2[base][strip]")
+            # Smeared sideways much harder than it is vertically: a line of text
+            # is destroyed by dragging it along its own direction, where an even
+            # blur strong enough to do the same would turn the strip to mush.
+            # Then darkened a little so anything drawn on top stays readable.
+            steps.append(f"[strip]crop=iw:{bh}:0:{y0},"
+                         f"gblur=sigma={max(28, bh)}:sigmaV={max(8, bh // 3)},"
+                         f"eq=brightness=-0.16[blurred]")
+            steps.append(f"[base][blurred]overlay=0:{y0}[covered]")
+            cur = "[covered]"
+
     if fit == "crop":
-        return (f"[0:v]{base},scale={REEL_W}:{REEL_H}:force_original_aspect_ratio=increase,"
-                f"crop={REEL_W}:{REEL_H},setsar=1[v]")
-    return (
-        f"[0:v]{base},split=2[a][b];"
-        f"[a]scale={REEL_W}:{REEL_H}:force_original_aspect_ratio=increase,"
-        f"crop={REEL_W}:{REEL_H},gblur=sigma=42,eq=brightness=-0.22:saturation=0.9[bg];"
-        f"[b]scale={REEL_W}:-2[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]")
+        steps.append(f"{cur}scale={REEL_W}:{REEL_H}:force_original_aspect_ratio=increase,"
+                     f"crop={REEL_W}:{REEL_H},setsar=1[v]")
+    else:
+        steps.append(f"{cur}split=2[a][b]")
+        steps.append(f"[a]scale={REEL_W}:{REEL_H}:force_original_aspect_ratio=increase,"
+                     f"crop={REEL_W}:{REEL_H},gblur=sigma=42,"
+                     f"eq=brightness=-0.22:saturation=0.9[bg]")
+        steps.append(f"[b]scale={REEL_W}:-2[fg]")
+        steps.append(f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]")
+    return steps
 
 
 def caption_y_for(crop, fit, strip_h, explicit):
@@ -1126,7 +1277,7 @@ def caption_y_for(crop, fit, strip_h, explicit):
     return max(0, min(y, REEL_H - strip_h - 70))
 
 
-def render(video, span, audio, captions, srt, out, crop, a):
+def render(video, span, audio, captions, srt, out, crop, a, band=None):
     """Cut, reframe, burn the captions on, and encode the finished reel.
 
     The same English text goes in twice on purpose: burned into the picture, so
@@ -1134,7 +1285,7 @@ def render(video, span, audio, captions, srt, out, crop, a):
     track, so a player can turn it off and a platform can read it.
     """
     dur = span["end"] - span["start"]
-    chain = [vertical_chain(crop, a.fit)]
+    chain = vertical_chain(crop, a.fit, band)
     last = "[v]"
 
     # Input 0 is the picture and 1 the audio; anything after that is numbered as
@@ -1190,12 +1341,12 @@ def list_voices():
             print(f"  {v['ShortName']:<40} {v['Gender']:<7} {v['Locale']}")
 
 
-def make_reels(target, a, progress=None):
-    """Run the whole pipeline. Returns (output directory, list of reels made).
+def prepare(target, a, progress=None, with_scripts=True):
+    """Everything up to the point where the narration scripts exist.
 
-    progress, when given, is called as progress(fraction, description) at each
-    stage, which is what lets the web page show where a long job has got to
-    without the pipeline knowing anything about the page.
+    Split from the rendering on purpose: the scripts are the part worth reading
+    before an hour of encoding starts, so this stops there and hands them back.
+    Nothing here is slow enough to regret, and all of it is cached.
     """
     def step(frac, desc):
         if progress:
@@ -1205,21 +1356,18 @@ def make_reels(target, a, progress=None):
     d = WORK / hashlib.sha1(url.encode()).hexdigest()[:12]
     d.mkdir(parents=True, exist_ok=True)
 
-    print("\n[1/6] source")
-    step(0.02, "Fetching the video")
+    print("\n[1/4] source")
+    step(0.05, "Fetching the video")
     video, title, info = fetch(url, d, a.max_height)
     total = duration_of(video)
     print(f"  {title}  ({hhmmss(total)})")
-    # Worth printing: this is where the narration scripts live, and editing one
-    # by hand is the way to take the writing over from the generator.
-    print(f"  cache: {d}")
 
-    print("\n[2/6] transcript")
-    step(0.10, "Reading the transcript")
+    print("\n[2/4] transcript")
+    step(0.30, "Reading the transcript")
     lines = transcript(video, d, a.whisper_model)
 
-    print("\n[3/6] picking the best stretches")
-    step(0.20, "Scoring the runtime and picking the best stretches")
+    print("\n[3/4] picking the best stretches")
+    step(0.55, "Scoring the runtime and picking the best stretches")
     spans = load_json(d / f"spans-{a.reels}-{a.duration}.json")
     if spans is None:
         spans = pick_highlights(video, lines, d, a.reels, a.duration, a.gap,
@@ -1229,30 +1377,61 @@ def make_reels(target, a, progress=None):
         preview = " ".join(clean_line(ln["text"]) for ln in lines_in(lines, s))[:100]
         print(f"  reel {i:02d}  {hhmmss(s['start'])} - {hhmmss(s['end'])}   {preview}")
 
-    if a.plan:
-        print("\n--plan: nothing rendered. Re-run without it to build these.")
-        return None, []
+    out_dir = OUTPUT / slugify(title)
+    scripts_dir = out_dir / "scripts"
+    ctx = {"url": url, "d": d, "video": video, "title": title, "total": total,
+           "lines": lines, "spans": spans, "out_dir": out_dir,
+           "scripts_dir": scripts_dir, "scripts": []}
+    if not with_scripts:
+        return ctx
 
+    print("\n[4/4] narration scripts")
+    for i, span in enumerate(spans, 1):
+        step(0.60 + 0.38 * (i - 1) / len(spans),
+             f"Writing narration {i} of {len(spans)}")
+        print(f"  reel {i:02d}")
+        ctx["scripts"].append(
+            narration_for(lines, span, span["end"] - span["start"], a, i, scripts_dir))
+    step(1.0, "Scripts ready")
+    return ctx
+
+
+def build(ctx, a, progress=None):
+    """Render the reels from an already-prepared job.
+
+    The scripts are read off disk again rather than taken from ctx, so anything
+    edited in between -- by hand or through the web page -- is what gets spoken.
+    """
+    def step(frac, desc):
+        if progress:
+            progress(frac, desc)
+
+    video, d, spans = ctx["video"], ctx["d"], ctx["spans"]
+    lines, total = ctx["lines"], ctx["total"]
+    out_dir, scripts_dir = ctx["out_dir"], ctx["scripts_dir"]
+
+    step(0.01, "Looking at the picture")
     crop = detect_letterbox(video, d)
+    band = detect_caption_band(video, d) if a.cover_captions else None
     font = find_font(a.font)
     if not font and not a.no_burn:
         print("  no bold font found, so nothing will be drawn into the picture "
               "(pass --font /path/to/font.ttf). The English subtitle track and "
               ".srt are written either way.")
 
-    out_dir = OUTPUT / slugify(title)
     out_dir.mkdir(parents=True, exist_ok=True)
     made = []
 
     for i, span in enumerate(spans, 1):
-        print(f"\n[4/6] reel {i:02d} of {len(spans)}  "
+        print(f"\nreel {i:02d} of {len(spans)}  "
               f"({hhmmss(span['start'])} - {hhmmss(span['end'])})")
-        # Rendering is the long tail of the job, so it gets the bar from a fifth
-        # of the way in to the end, split evenly between the reels.
-        base = 0.25 + 0.73 * (i - 1) / len(spans)
-        span_frac = 0.73 / len(spans)
-        step(base, f"Reel {i} of {len(spans)}: writing the narration")
-        text = narration_for(lines, span, span["end"] - span["start"], a, i, d)
+        # The bar is split evenly between the reels, leaving a sliver at the
+        # front for the one-off look at the picture.
+        base = 0.03 + 0.95 * (i - 1) / len(spans)
+        span_frac = 0.95 / len(spans)
+        step(base, f"Reel {i} of {len(spans)}: reading the narration")
+        text = narration_for(lines, span, span["end"] - span["start"], a, i,
+                             scripts_dir)
         if not text:
             print("    nothing said in this stretch; skipping")
             continue
@@ -1281,7 +1460,7 @@ def make_reels(target, a, progress=None):
                               "-ac", "2", "-ar", str(SAMPLE_RATE))
             bed = background_bed(clip_audio, d, i, a.demucs_model)
 
-        print("[5/6] mixing and captioning")
+        print("    mixing and captioning")
         step(base + span_frac * 0.70, f"Reel {i} of {len(spans)}: mixing and captioning")
         audio = mix(bed, voice_wav, d, i, a.bg_gain)
         # The text is grouped whether or not it gets burned in: the subtitle
@@ -1293,7 +1472,7 @@ def make_reels(target, a, progress=None):
                 chunks, dur, d, i, font, a.caption_size,
                 tuple(int(x) for x in a.caption_color.split(",")) + (255,))
 
-        print("[6/6] encoding")
+        print("    encoding")
         step(base + span_frac * 0.82, f"Reel {i} of {len(spans)}: encoding")
         out = out_dir / f"reel-{i:02d}.mp4"
         # Written before the encode, not after: it is muxed in as a subtitle
@@ -1304,8 +1483,7 @@ def make_reels(target, a, progress=None):
         else:
             srt.unlink(missing_ok=True)
             srt = None
-        render(video, span, audio, caps, srt, out, crop, a)
-        (out_dir / f"reel-{i:02d}.txt").write_text(text, encoding="utf-8")
+        render(video, span, audio, caps, srt, out, crop, a, band)
         made.append({"file": out.name, "source_start": span["start"],
                      "source_end": round(span["end"], 2), "seconds": round(dur, 1),
                      "narration": text})
@@ -1313,10 +1491,53 @@ def make_reels(target, a, progress=None):
 
     if made:
         save_json(out_dir / "manifest.json",
-                  {"title": title, "source": url, "reels": made})
-    step(1.0, f"Done: {len(made)} reels")
-    print(f"\nDone: {len(made)} reels in {out_dir}")
+                  {"title": ctx["title"], "source": ctx["url"], "reels": made})
+    plural = "reel" if len(made) == 1 else "reels"
+    step(1.0, f"Done: {len(made)} {plural}")
+    print(f"\nDone: {len(made)} {plural} in {out_dir}")
+    skipped = len(spans) - len(made)
+    if skipped:
+        print(f"  {skipped} skipped for having an empty script -- write those in "
+              f"{scripts_dir} and run again")
+    print(f"  cache now holds {human_size(dir_size(WORK))}. "
+          f"Run with --clean to free it.")
     return out_dir, made
+
+
+def make_reels(target, a, progress=None):
+    """Prepare and build in one go, for the command line.
+
+    The two halves get their own slice of the progress bar; preparing is a small
+    fraction of the work, however long the download takes.
+    """
+    def slice_of(lo, hi):
+        if not progress:
+            return None
+        return lambda frac, desc: progress(lo + (hi - lo) * frac, desc)
+
+    ctx = prepare(target, a, slice_of(0.0, 0.15), with_scripts=not a.plan)
+
+    if a.plan:
+        print("\n--plan: nothing rendered. Re-run without it to build these.")
+        return None, []
+
+    if a.scripts:
+        print(f"\nScripts written to {ctx['scripts_dir']}")
+        empty = 0
+        for i, text in enumerate(ctx["scripts"], 1):
+            if text:
+                print(f"  reel-{i:02d}.txt   {len(text.split())} words")
+            else:
+                empty += 1
+                print(f"  reel-{i:02d}.txt   empty -- write this one yourself "
+                      f"or the reel is skipped")
+        print("\nRead them, edit whichever you want to rewrite, then run the "
+              "same command again without --scripts to build the reels.")
+        if empty:
+            print("An empty script means that stretch had no speech to work from.")
+        return ctx["out_dir"], []
+
+    return build(ctx, a, slice_of(0.15, 1.0))
 
 
 def build_parser():
@@ -1368,6 +1589,9 @@ def build_parser():
     p.add_argument("--no-burn", action="store_true",
                    help="leave the picture clean: English stays as a subtitle "
                         "track and a .srt, but is not drawn into the frame")
+    p.add_argument("--cover-captions", action="store_true",
+                   help="blur away subtitles burned into the source picture "
+                        "before drawing the narration's own captions")
     p.add_argument("--no-bg", action="store_true",
                    help="drop the original audio entirely (skips Demucs, much faster)")
     p.add_argument("--bg-gain", type=float, default=0.55,
@@ -1381,6 +1605,12 @@ def build_parser():
                    help="hardware encoder: much quicker, slightly softer picture")
     p.add_argument("--plan", action="store_true",
                    help="print the stretches that would be cut, render nothing")
+    p.add_argument("--scripts", action="store_true",
+                   help="write the narration scripts and stop, so you can read "
+                        "and edit them before anything is rendered")
+    p.add_argument("--clean", action="store_true",
+                   help="delete the working cache (the downloaded video and "
+                        "intermediates) and exit; your reels are not touched")
     return p
 
 
@@ -1388,6 +1618,9 @@ def main():
     p = build_parser()
     a = p.parse_args()
 
+    if a.clean:
+        clean_cache()
+        return
     if a.list_voices:
         list_voices()
         return

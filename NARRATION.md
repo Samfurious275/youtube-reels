@@ -76,41 +76,54 @@ explicitly ruled out.
 
 ### 3. Write it yourself — the best results
 
-Every script is cached as a plain text file, and **the pipeline reads that file
-back verbatim**. So you can take the writing over completely.
+Every script is a plain text file, and **the pipeline reads it back verbatim**.
+So you can take the writing over completely. There is a command for exactly
+this:
 
-The run prints where the cache is:
-
-```
-  cache: /path/to/youtube-reels/work/03dee7c87ca1
-```
-
-Inside, one file per reel:
-
-```
-script-01.txt
-script-02.txt
+```bash
+./run.sh "URL" --scripts          # macOS / Linux
+.\run.bat "URL" --scripts         # Windows
 ```
 
-The workflow:
-
-1. Run once to get the picks and the first drafts:
-   ```bash
-   ./run.sh "URL" --reels 5 --no-bg
-   ```
-2. Open `work/<id>/script-01.txt` and rewrite it however you like.
-3. Run **exactly the same command again**. It re-speaks the new words, re-times
-   the captions to them, and re-renders that reel.
+That picks the stretches, writes a script for each, and **stops before anything
+is rendered**. The files land next to where the reels will go:
 
 ```
-    cached script: 52 words
+output/<video title>/scripts/reel-01.txt
+output/<video title>/scripts/reel-02.txt
+```
+
+It tells you what it wrote:
+
+```
+  reel-01.txt   45 words
+  reel-02.txt   52 words
+  reel-03.txt   empty -- write this one yourself or the reel is skipped
+```
+
+Open them in any text editor — Notepad is fine — rewrite whatever you like, save.
+Then build with **the same command minus `--scripts`**:
+
+```bash
+./run.sh "URL"
+```
+
+```
+    script (yours): 52 words
     narration 16.7s -> reel 30.0s
 ```
 
-The picks are cached too, so they do not move between runs. Only what you changed
-is redone.
+The picks are cached too, so they do not move between runs. Change one script and
+only that reel changes.
 
-To throw a script away and let the generator try again, delete that one file.
+To throw a script away and let the generator write it again, delete that file.
+
+**An empty script** means that stretch had no speech to work from. The file is
+still created, so you can write it yourself. Left empty, that reel is skipped.
+
+**Prefer clicking?** The web page (`./serve.sh`, or `serve.bat` on Windows) does
+the same two steps: press *Get the narration scripts*, edit them in the boxes
+that appear, then press *Make the reels*.
 
 > This is also how you narrate in another language: write the script in that
 > language and pick a matching `--voice`. The automatic modes work from an
@@ -219,13 +232,14 @@ curl http://127.0.0.1:11434/api/tags
 Then pull the model you named: `ollama pull llama3.2`.
 
 **My edit to the script did nothing.**
-You probably edited `output/<title>/reel-01.txt`, which is only a copy of what was
-used. Edit `work/<id>/script-01.txt` — the path printed as `cache:` at the start
-of the run.
+Check you edited `output/<title>/scripts/reel-01.txt` and saved it. Run with
+`--scripts` to have the folder printed for you, and look for `script (yours)` in
+the output of the next run — that line means your file was the one that was read.
 
-**"nothing said in this stretch; skipping".**
-There was too little speech there to write from. Lower `--gap` so it picks
-different stretches, or write that script by hand.
+**"script: empty (nothing said in this stretch)".**
+There was too little speech there to write from, so the file was left empty and
+that reel will be skipped. Write it yourself, or lower `--gap` so it picks
+different stretches.
 
 **The narrator talks over the whole reel with no pauses.**
 The script is too long for the time. Cut words — the reel will shorten to fit.
