@@ -117,8 +117,12 @@ this:
 .\run.bat "URL" --scripts         # Windows
 ```
 
-That picks the stretches, writes a script for each, and **stops before anything
-is rendered**. The files land next to where the reels will go:
+That downloads **only the transcript**, picks the parts, writes a script for
+each, and **stops before anything is rendered** — the video is not fetched at
+all, so this comes back in seconds and costs a few hundred kilobytes even for a
+feature-length film.
+
+The files land next to where the reels will go:
 
 ```
 output/<video title>/scripts/reel-01.txt

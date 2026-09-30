@@ -16,6 +16,9 @@ hated the writing:
 ./run.sh "https://www.youtube.com/watch?v=XXXX"             # 2. build the reels
 ```
 
+Step 1 downloads **only the transcript** — a few hundred kilobytes, done in
+seconds. The video itself is not fetched until you ask for the reels.
+
 Everything is free. **There are no API keys anywhere in this project** — no
 Claude, no OpenAI, nothing to sign up for and nothing to pay for. The pipeline
 runs on your own machine; the one step that reaches the internet is the narrator
@@ -85,15 +88,29 @@ Want the old behaviour — separate best moments that do not connect?
 ./run.sh "URL" --highlights
 ```
 
-### I want to see the narration scripts, and edit them before anything is made
+### I want just the scripts — download only the transcript, no video
 
 ```bash
 ./run.sh "URL" --scripts          # macOS / Linux
 .\run.bat "URL" --scripts         # Windows
 ```
 
-This downloads the video, picks the stretches, writes one script per reel, and
-**stops**. The scripts land in `output/<video title>/scripts/`:
+This downloads **only the captions**, works out the parts, writes one script per
+reel, and **stops**. No video is fetched — on an 18-minute talk the whole thing
+takes seconds and leaves about 1 MB on disk:
+
+```
+part 01  narrates 0:00:36 - 0:06:40, shows 0:04:21 - 0:05:21
+part 02  narrates 0:06:40 - 0:12:45, shows 0:08:43 - 0:09:43
+
+Scripts written to output/<video title>/scripts
+  reel-01.txt   183 words   Part 1
+  reel-02.txt   184 words   Part 2
+The video itself has not been downloaded yet -- that happens on the build run.
+```
+
+So you can write and approve the whole narration for a two-hour film before
+committing to the download. The scripts land in `output/<video title>/scripts/`:
 
 ```
 scripts/reel-01.txt   45 words
@@ -371,10 +388,13 @@ Your browser opens at `http://127.0.0.1:7861`. It has **the same two steps** as
 the command line, and every option above is a checkbox or a slider:
 
 1. Paste a link or drop in a file, choose how many reels, press
-   **Get the narration scripts**.
-2. The scripts appear in editable boxes, one per reel, labelled with the part of
-   the source they came from. **Read them. Change anything.**
-3. Press **Make the reels**. Only now does the slow work start.
+   **Get the narration scripts**. This downloads **only the transcript**, so it
+   comes back in seconds even for a long film.
+2. The scripts appear in **editable boxes**, one per reel, labelled with the
+   chapter title and the part of the source they cover. **Read them. Change
+   anything.** They can also be downloaded as `.txt` files from the box below.
+3. Press **Make the reels**. Only now is the video downloaded and the slow work
+   started.
 
 You can change the voice, the framing, dialogue removal and the subtitle options
 *after* reading the scripts — they are only used in step 2.
@@ -453,6 +473,16 @@ The full install is about **1.3 GB**, and `torch` alone is 573 MB of it. On top
 of that, the working cache holds the downloaded video and is usually the biggest
 thing on disk.
 
+### Write the scripts without downloading anything big
+
+`--scripts` fetches only the captions, so you can pick the parts, write the
+narration and approve it all before a single frame of video is downloaded:
+
+```bash
+./run.sh "URL" --scripts     # a few hundred KB
+./run.sh "URL"               # only now does the video arrive
+```
+
 ### Free up space now
 
 ```bash
@@ -525,7 +555,7 @@ picture is scaled up to 1080 wide.
 | Flag | Does |
 | --- | --- |
 | `--highlights` | separate best moments instead of the default recap series |
-| `--scripts` | write the narration scripts and stop, so you can read and edit them |
+| `--scripts` | download only the transcript, write the narration scripts and stop — no video fetched |
 | `--plan` | show the stretches it would cut, write and render nothing |
 | `--clean` | delete the working cache and exit; reels and scripts are kept |
 | `--reels 7` | how many to cut (default 7) |

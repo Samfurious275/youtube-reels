@@ -303,6 +303,49 @@ def fetch(target, d, max_height=1080):
     return video, info.get("title") or video.stem, info
 
 
+def download_audio(target, d):
+    """Just the soundtrack, for transcribing a video that has no captions.
+
+    A couple of hundred megabytes at most against several gigabytes for the
+    picture, and Whisper never looks at the picture anyway.
+    """
+    got = next((p for p in sorted(d.glob("audio.*")) if p.suffix != ".json"), None)
+    if got:
+        return got
+    run(["yt-dlp", "--no-playlist", "-f", "bestaudio/best",
+         "-o", str(d / "audio.%(ext)s"), target])
+    return next((p for p in sorted(d.glob("audio.*")) if p.suffix != ".json"), None)
+
+
+def fetch_meta(target, d):
+    """The transcript and the runtime, without downloading the video.
+
+    Writing narration only needs the words and how long the film is, and the
+    film itself is gigabytes. So this fetches the captions and the metadata and
+    stops. The picture is downloaded later, and only if you go on to render.
+
+    Returns (video_or_None, title, total_seconds). A local file is used where it
+    sits -- there is nothing to save by refusing to look at a file already on
+    the disk.
+    """
+    local = Path(target).expanduser()
+    if local.exists() and local.suffix.lower() in VIDEO_EXTS:
+        video, title, _ = fetch(target, d)
+        return video, title, duration_of(video)
+
+    if not (d / "source.info.json").exists():
+        run(["yt-dlp", "--no-playlist", "--skip-download", "--write-info-json",
+             "-o", str(d / "source.%(ext)s"), target])
+    download_captions(target, d)
+
+    info = load_json(d / "source.info.json") or {}
+    total = float(info.get("duration") or 0)
+    if not total:
+        sys.exit("Could not read the video's duration without downloading it. "
+                 "Run without --scripts to fetch the video itself.")
+    return None, info.get("title") or "video", total
+
+
 def caption_files(d):
     """Caption files best first.
 
@@ -558,8 +601,31 @@ def score_curve(video, lines, d, start_frac, end_frac):
     return score, seconds, total
 
 
+def transcript_score(lines, total, start_frac, end_frac):
+    """Scoring from the transcript alone, for when no video has been downloaded.
+
+    Only how much is being said, because loudness needs the film's audio. For
+    chapter boundaries that costs nothing -- a recap's structure comes from the
+    runtime, not the soundtrack -- and for choosing which minute to show it is a
+    fair stand-in until the picture is actually there.
+    """
+    seconds = max(int(total), 1)
+    score = _norm(speech_curve(lines, seconds)[:seconds])
+    score[:int(seconds * start_frac)] = -1
+    score[int(seconds * (1 - end_frac)):] = -1
+    return score, seconds, float(total)
+
+
 def story_spans(video, lines, d, count, target, start_frac, end_frac):
-    """Consecutive chapters covering the film in order, for a recap series.
+    """Consecutive chapters covering the film in order, for a recap series."""
+    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
+    return story_chapters(score, seconds, total, count, target, start_frac, end_frac,
+                          lambda t: snap_to_cut(video, t, d))
+
+
+def story_chapters(score, seconds, total, count, target, start_frac, end_frac,
+                   snap=None):
+    """Divide the runtime into N chapters and pick each one's footage.
 
     This is a different job from picking highlights. A recap tells the story
     from beginning to end across several parts, so the film is divided into N
@@ -570,10 +636,12 @@ def story_spans(video, lines, d, count, target, start_frac, end_frac):
     -- while showing only the best minute or so of footage from inside it. That
     is how these recaps work: the voice covers the plot, the picture shows the
     part worth looking at.
+
+    snap moves a start onto the nearest shot change; left out, the spans come
+    back marked unsnapped so that can be done later, once the video exists.
     """
     import numpy as np
 
-    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
     lo = int(seconds * start_frac)
     hi = int(seconds * (1 - end_frac))
     if hi - lo < count:
@@ -594,15 +662,18 @@ def story_spans(video, lines, d, count, target, start_frac, end_frac):
             at = c0 + int(np.argmax(means))
         else:
             at = c0
-        start = snap_to_cut(video, float(at), d)
-        spans.append({
+        start = snap(float(at)) if snap else float(at)
+        span = {
             "start": round(start, 2),
             "end": round(min(start + target, total), 2),
             # The stretch of story this chapter is responsible for narrating.
             "narr_start": round(c0, 2),
             "narr_end": round(c1, 2),
             "chapter": i + 1,
-        })
+        }
+        if snap is None:
+            span["unsnapped"] = True
+        spans.append(span)
     return spans
 
 
@@ -615,9 +686,15 @@ def pick_highlights(video, lines, d, count, target, gap, start_frac, end_frac):
     greedily, best first, with a gap enforced around each one so all N do not
     pile into the same ten minutes.
     """
+    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
+    return best_windows(score, seconds, total, count, target, gap,
+                        lambda t: snap_to_cut(video, t, d))
+
+
+def best_windows(score, seconds, total, count, target, gap, snap=None):
+    """The N best-scoring stretches, far enough apart not to overlap."""
     import numpy as np
 
-    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
     win = int(target)
     if seconds <= win:
         sys.exit(f"This video is only {hhmmss(total)} long; nothing to cut up.")
@@ -646,8 +723,11 @@ def pick_highlights(video, lines, d, count, target, gap, start_frac, end_frac):
 
     spans = []
     for t0 in sorted(picks):
-        s = snap_to_cut(video, float(t0), d)
-        spans.append({"start": round(s, 2), "end": round(min(s + target, total), 2)})
+        s = snap(float(t0)) if snap else float(t0)
+        span = {"start": round(s, 2), "end": round(min(s + target, total), 2)}
+        if snap is None:
+            span["unsnapped"] = True
+        spans.append(span)
     return spans
 
 
@@ -1491,7 +1571,7 @@ def list_voices():
             print(f"  {v['ShortName']:<40} {v['Gender']:<7} {v['Locale']}")
 
 
-def prepare(target, a, progress=None, with_scripts=True):
+def prepare(target, a, progress=None, with_scripts=True, need_video=True):
     """Everything up to the point where the narration scripts exist.
 
     Split from the rendering on purpose: the scripts are the part worth reading
@@ -1507,14 +1587,25 @@ def prepare(target, a, progress=None, with_scripts=True):
     d.mkdir(parents=True, exist_ok=True)
 
     print("\n[1/4] source")
-    step(0.05, "Fetching the video")
-    video, title, info = fetch(url, d, a.max_height)
-    total = duration_of(video)
+    if need_video:
+        step(0.05, "Fetching the video")
+        video, title, _ = fetch(url, d, a.max_height)
+        total = duration_of(video)
+    else:
+        step(0.05, "Fetching the transcript")
+        video, title, total = fetch_meta(url, d)
     print(f"  {title}  ({hhmmss(total)})")
+    if video is None:
+        print("  transcript only -- the video itself has not been downloaded")
 
     print("\n[2/4] transcript")
     step(0.30, "Reading the transcript")
-    lines = transcript(video, d, a.whisper_model)
+    source_for_speech = video
+    if source_for_speech is None and not caption_files(d):
+        print("  no captions published for this video -- fetching the audio "
+              "so it can be transcribed")
+        source_for_speech = download_audio(url, d)
+    lines = transcript(source_for_speech, d, a.whisper_model)
 
     print("\n[3/4] picking the best stretches")
     step(0.55, "Scoring the runtime and picking the best stretches")
@@ -1522,7 +1613,17 @@ def prepare(target, a, progress=None, with_scripts=True):
     cache = d / f"spans-{mode}-{a.reels}-{a.duration}.json"
     spans = load_json(cache)
     if spans is None:
-        if a.highlights:
+        if video is None:
+            # No picture to score or to find shot changes in, so go on the
+            # transcript alone and leave the spans marked for snapping later.
+            score, seconds, tot = transcript_score(lines, total, a.skip_start,
+                                                   a.skip_end)
+            if a.highlights:
+                spans = best_windows(score, seconds, tot, a.reels, a.duration, a.gap)
+            else:
+                spans = story_chapters(score, seconds, tot, a.reels, a.duration,
+                                       a.skip_start, a.skip_end)
+        elif a.highlights:
             spans = pick_highlights(video, lines, d, a.reels, a.duration, a.gap,
                                     a.skip_start, a.skip_end)
         else:
@@ -1544,7 +1645,7 @@ def prepare(target, a, progress=None, with_scripts=True):
     scripts_dir = out_dir / "scripts"
     ctx = {"url": url, "d": d, "video": video, "title": title, "total": total,
            "lines": lines, "spans": spans, "out_dir": out_dir,
-           "scripts_dir": scripts_dir, "scripts": []}
+           "scripts_dir": scripts_dir, "scripts": [], "spans_cache": cache}
     if not with_scripts:
         return ctx
 
@@ -1584,7 +1685,41 @@ def build(ctx, a, progress=None):
     lines, total = ctx["lines"], ctx["total"]
     out_dir, scripts_dir = ctx["out_dir"], ctx["scripts_dir"]
 
-    step(0.01, "Looking at the picture")
+    if video is None:
+        # The scripts were written from the transcript alone. Everything from
+        # here needs the picture, so this is where it gets downloaded.
+        step(0.005, "Fetching the video")
+        video, _, _ = fetch(ctx["url"], d, a.max_height)
+        ctx["video"] = video
+        total = ctx["total"] = duration_of(video)
+
+    if any(s.get("unsnapped") for s in spans):
+        # These were chosen from the transcript, with no picture to score or to
+        # find shot changes in.
+        step(0.01, "Choosing the footage now the picture is here")
+        if not a.highlights:
+            # A recap's chapters are a fixed division of the runtime, so redoing
+            # the pick returns the very same chapters -- and therefore still
+            # matches the scripts already written against them. Only the minute
+            # of footage inside each one changes, and it improves, because
+            # loudness can be scored now as well as speech.
+            for s, better in zip(spans, story_spans(video, lines, d, len(spans),
+                                                    a.duration, a.skip_start,
+                                                    a.skip_end)):
+                s.update(better)
+        else:
+            # Highlight picks are not reproducible from the runtime alone, so
+            # re-picking them would leave the scripts describing other moments.
+            # Move them onto a shot change and otherwise leave them be.
+            for s in spans:
+                length = s["end"] - s["start"]
+                s["start"] = round(snap_to_cut(video, s["start"], d), 2)
+                s["end"] = round(min(s["start"] + length, total), 2)
+        for s in spans:
+            s.pop("unsnapped", None)
+        save_json(ctx["spans_cache"], spans)
+
+    step(0.02, "Looking at the picture")
     crop = detect_letterbox(video, d)
     band = detect_caption_band(video, d) if a.cover_captions else None
     font = find_font(a.font)
@@ -1690,7 +1825,12 @@ def make_reels(target, a, progress=None):
             return None
         return lambda frac, desc: progress(lo + (hi - lo) * frac, desc)
 
-    ctx = prepare(target, a, slice_of(0.0, 0.15), with_scripts=not a.plan)
+    # Neither planning nor writing scripts needs the picture, so those fetch the
+    # captions and stop -- seconds and a few kilobytes instead of a download
+    # that can run to gigabytes.
+    light = a.plan or a.scripts
+    ctx = prepare(target, a, slice_of(0.0, 0.15), with_scripts=not a.plan,
+                  need_video=not light)
 
     if a.plan:
         print("\n--plan: nothing rendered. Re-run without it to build these.")
@@ -1710,6 +1850,9 @@ def make_reels(target, a, progress=None):
                       f"or the reel is skipped")
         print("\nRead them, edit whichever you want to rewrite, then run the "
               "same command again without --scripts to build the reels.")
+        if ctx["video"] is None:
+            print("The video itself has not been downloaded yet -- that happens "
+                  "on the build run.")
         if empty:
             print("An empty script means that stretch had no speech to work from.")
         return ctx["out_dir"], []
@@ -1788,8 +1931,9 @@ def build_parser():
                         "consecutive parts telling the story in order, each "
                         "carrying on from the last")
     p.add_argument("--scripts", action="store_true",
-                   help="write the narration scripts and stop, so you can read "
-                        "and edit them before anything is rendered")
+                   help="download only the transcript, write the narration "
+                        "scripts and stop -- so you can read and edit them "
+                        "before the video is ever fetched")
     p.add_argument("--clean", action="store_true",
                    help="delete the working cache (the downloaded video and "
                         "intermediates) and exit; your reels are not touched")

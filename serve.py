@@ -67,7 +67,9 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     reels.WORK.mkdir(exist_ok=True)
     reels.OUTPUT.mkdir(exist_ok=True)
 
-    ctx = reels.prepare(target, a,
+    # Transcript only: the picture is not downloaded until you press the second
+    # button, so getting the scripts takes seconds even for a long film.
+    ctx = reels.prepare(target, a, need_video=False,
                         progress=lambda frac, desc: progress(frac, desc=desc))
     spans, scripts = ctx["spans"], ctx["scripts"]
 
@@ -86,15 +88,19 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
             boxes.append(gr.update(visible=False, value=""))
 
     empty = sum(1 for s in scripts if not s.strip())
-    note = [f"**{len(spans)} stretches picked.** Read the scripts below, change "
-            f"anything you like, then press *Make the reels*."]
+    note = [f"**{len(spans)} parts.** Read the scripts below, change anything "
+            f"you like, then press *Make the reels*."]
     if empty:
         note.append(f"\n**{empty}** of them came out empty, because that stretch "
                     f"had no speech to work from. Write those yourself, or they "
                     f"will be skipped.")
+    if ctx["video"] is None:
+        note.append("\nOnly the transcript has been downloaded so far — the "
+                    "video itself is fetched when you press *Make the reels*.")
     note.append(f"\nScripts are also saved in `{ctx['scripts_dir']}`.")
 
-    return [ctx, "\n".join(note), gr.update(visible=True)] + boxes
+    files = [str(p) for p in sorted(Path(ctx["scripts_dir"]).glob("reel-*.txt"))]
+    return [ctx, "\n".join(note), gr.update(visible=True), files] + boxes
 
 
 def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
@@ -151,8 +157,9 @@ def build_ui():
             "the original dialogue removed, the music kept, a narrator over the "
             "top and captions burned in.\n\n"
             "**It works in two steps.** First you get the narration scripts to "
-            "read and edit. Nothing slow happens until you press the second "
-            "button."
+            "read and edit — that downloads only the transcript, so it takes "
+            "seconds even for a long film. The video itself is fetched only "
+            "when you press the second button."
         )
 
         job = gr.State()
@@ -202,6 +209,7 @@ def build_ui():
                 notes = gr.Markdown()
                 boxes = [gr.Textbox(label=f"Reel {i + 1}", lines=5, visible=False,
                                     interactive=True) for i in range(MAX_REELS)]
+                script_files = gr.Files(label="The scripts, as .txt files")
                 step2 = gr.Button("Make the reels", variant="primary", visible=False)
                 preview = gr.Video(label="First reel")
                 summary = gr.Markdown()
@@ -211,7 +219,7 @@ def build_ui():
                 use_ollama, story]
 
         step1.click(get_scripts, inputs=form,
-                    outputs=[job, notes, step2] + boxes)
+                    outputs=[job, notes, step2, script_files] + boxes)
         step2.click(make_reels, inputs=[job] + form + boxes,
                     outputs=[preview, out_files, summary])
     return demo
