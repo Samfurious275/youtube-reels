@@ -862,6 +862,72 @@ def detect_caption_band(video, d, samples=14):
 # ---------------------------------------------------------------- 4. script
 
 
+# How the narration is written. Only the wording of these changes between
+# styles -- the voice, the timings and the captions downstream are identical --
+# so another style is just another entry here.
+STYLES = {
+    "punchy": {
+        "label": "fast story recap: past tense, one beat per sentence",
+        "rules": (
+            "Write in the past tense. Keep every sentence to a single idea and "
+            "to about fourteen words at most, so each one lands as its own "
+            "beat. Move the plot forward in every sentence: no scene-setting, "
+            "no atmosphere, and no describing how anything looks or feels "
+            "unless it changes what happens next. Report what people say "
+            "instead of quoting them. Use the characters' names. Every verb is "
+            "a past-tense one: walked, said, found, took -- never walks, says, "
+            "finds, takes."),
+        "open": ("Open with one striking thing the main character did, then "
+                 "turn it immediately -- something they did not know, or "
+                 "something that went wrong."),
+        "close": ("Finish with one short direct question to the viewer about "
+                  "what they would have done."),
+        # Repeated last because a small model weights the end of a prompt most,
+        # and tense is the first thing it drifts on.
+        "reminder": ("every single sentence is in the past tense, and no "
+                     "sentence runs past about fourteen words"),
+    },
+    "cinematic": {
+        "label": "steadier retelling: present tense, longer sentences",
+        "rules": (
+            "Retell what happens in the third person and the present tense, in "
+            "plain confident sentences. Use characters' names as the transcript "
+            "gives them. Keep sentences short. Do not quote dialogue and do not "
+            "address the viewer."),
+        "open": "Open with the situation and who it happens to.",
+        "close": "",
+        "reminder": "every sentence is in the present tense",
+    },
+}
+
+DEFAULT_STYLE = "punchy"
+
+# Asking for the title in prose produced titles run together with the first
+# sentence, which then got read aloud. Asking for JSON parsed perfectly but
+# wrecked the writing -- constrained decoding collapses a small model's prose
+# into comma-spliced fragments a tenth of the length. A plain separator keeps
+# the prose intact and still splits deterministically.
+TITLE_SEP = "|||"
+REPLY_FORMAT = (f' Reply with a short title of at most six words, then {TITLE_SEP}, '
+              f'then the narration. Put nothing else in the reply.')
+
+
+def style_for(a):
+    """The writing rules this run should use.
+
+    A file given with --style-file replaces the built-in wording outright, so a
+    style nobody anticipated does not need a code change to use.
+    """
+    path = getattr(a, "style_file", None)
+    if path:
+        text = Path(path).read_text(encoding="utf-8").strip()
+        if not text:
+            sys.exit(f"{path} is empty -- it should describe how to write.")
+        return {"label": f"custom ({Path(path).name})", "rules": text,
+                "open": "", "close": ""}
+    return STYLES[getattr(a, "style", DEFAULT_STYLE)]
+
+
 CUE = re.compile(r"\[[^\]]*\]|\([^)]*\)|♪|>>")
 SPEAKER = re.compile(r"^[A-Z][A-Z .'-]{1,20}:\s*")
 
@@ -952,7 +1018,8 @@ uh um going get got know really right now one see said says come came go went ab
 """.split())
 
 
-def ollama_script(lines, span, target_words, model, host, chapter=None, previous=None):
+def ollama_script(lines, span, target_words, model, host, chapter=None,
+                  previous=None, style=None, is_last=False):
     """Ask a local Ollama model for real narration. Free, offline, no key.
 
     Returns (title, text), or None on any failure so the caller can fall back
@@ -966,12 +1033,20 @@ def ollama_script(lines, span, target_words, model, host, chapter=None, previous
     if len(excerpt.split()) < 12:
         return None
 
-    rules = ("Retell what happens as a story, in the third person and the present "
-             "tense, in plain confident sentences. Use characters' names as the "
-             "transcript gives them. Keep sentences short. Do not quote dialogue, "
-             "do not address the viewer, do not comment on the film or call it a "
-             "film, and do not write stage directions, headings, bullet points or "
+    style = style or STYLES[DEFAULT_STYLE]
+    # The chosen style says how to write; these hold whatever the style does not
+    # cover, and are the same for all of them because they are about the medium
+    # rather than the voice.
+    rules = (style["rules"] + " Never comment on the film or call it a film, and "
+             "never write stage directions, headings, bullet points or "
              "quotation marks.")
+
+    # Goes last in the prompt, where a small model pays most attention, because
+    # tense and sentence length are the first things it drifts away from.
+    checks = [c for c in (style.get("reminder", ""),
+                          "the last line is a question to the viewer"
+                          if (is_last and style["close"]) else "") if c]
+    reminder = f"\n\nBefore you reply, check that {', and '.join(checks)}." if checks else ""
 
     if chapter:
         # A recap runs across several parts, so each one has to pick up exactly
@@ -994,51 +1069,85 @@ def ollama_script(lines, span, target_words, model, host, chapter=None, previous
             f"part. {rules} "
             + ("Continue straight on from the story so far, without recapping it "
                "and without any greeting or introduction. "
-               if previous else
-               "Open with the situation and who it happens to. ")
-            + "First give a short chapter title of at most six words on its own "
-              "first line, in the form 'TITLE: <the title>'. Then write the "
-              "narration. Reply with nothing else.")
+               if previous else style["open"] + " ")
+            # The sign-off belongs at the end of the whole recap, not at the end
+            # of every part of it.
+            + ((style["close"] + " ") if is_last and style["close"] else "")
+            + REPLY_FORMAT
+            + reminder)
     else:
         prompt = (
             "Below is the transcript of one scene from a film.\n\n"
             f"TRANSCRIPT:\n{excerpt}\n\n"
             f"Write about {target_words} words of voiceover narration for a "
-            f"vertical short built from this scene. {rules} Open with a line "
-            "that makes someone stop scrolling. Reply with the narration only.")
+            f"vertical short built from this scene. {rules} {style['open']} "
+            + ((style["close"] + " ") if style["close"] else "")
+            + REPLY_FORMAT
+            + reminder)
 
     body = json.dumps({
         "model": model, "prompt": prompt, "stream": False,
-        "options": {"temperature": 0.7, "num_predict": int(target_words * 2.4)},
+        "options": {"temperature": 0.7, "num_predict": int(target_words * 3)},
     }).encode()
-    req = urllib.request.Request(f"{host.rstrip('/')}/api/generate", data=body,
-                                 headers={"Content-Type": "application/json"})
-    # Tried twice, because one dropped call quietly costs a whole chapter: the
+    # Tried twice, because one bad generation quietly costs a whole chapter: the
     # fallback keeps the run alive but drops that part to the extractive script,
     # which in a recap series reads jarringly unlike the ones either side of it.
-    text = ""
+    # A reply that parses to nothing counts as a failure too -- a model that
+    # answers with only its title line is no more use than one that times out.
     for attempt in range(2):
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=300) as r:
-                text = json.loads(r.read()).get("response", "")
-            break
+                raw = json.loads(r.read()).get("response", "")
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
             if attempt == 0:
-                print(f"    ollama call failed ({e}); retrying once")
+                print(f"    ollama call failed ({e}); retrying")
                 continue
             print(f"    ollama unavailable ({e}); using the extractive script")
             return None
 
+        title, text = parse_narration(raw)
+        if text:
+            return title, text
+        if attempt == 0:
+            print("    ollama returned no narration; retrying")
+
+    print("    ollama returned nothing usable; using the extractive script")
+    return None
+
+
+def parse_narration(raw):
+    """Pull the title and the spoken words out of whatever the model replied.
+
+    Returns (title_or_None, text). An empty text means the reply was unusable.
+
+    The title is asked for before a separator, so that is tried first and
+    settles it. Everything below is the fallback for a reply that ignored it.
+    """
+    raw = raw.strip()
+    if TITLE_SEP in raw:
+        head, _, tail = raw.partition(TITLE_SEP)
+        spoken = tail.strip().strip("\"'*#").strip()
+        if spoken:
+            head = re.sub(r"^\s*[\"'*#\s]*title\s*:\s*", "", head.strip(), flags=re.I)
+            title = head.strip().strip("\"'*#").strip() or None
+            return title, re.sub(r"\s+", " ", spoken)
+
     # Models like to open with "Here is the narration:" and to wrap the whole
     # thing in quotes; neither belongs in something that gets read aloud.
-    text = re.sub(r"^\s*(here'?s?|sure|okay)[^\n:]*:\s*", "", text.strip(), flags=re.I)
+    text = re.sub(r"^\s*(here'?s?|sure|okay)[^\n:]*:\s*", "", raw, flags=re.I)
 
     title = None
     m = re.match(r"^\s*[\"'*#\s]*title\s*:\s*(.+)", text, flags=re.I)
     if m:
         line, _, rest = m.group(1).partition("\n")
-        title = re.sub(r"[\"'*#\s]+$", "", line.strip())
-        text = rest
+        # Only take it as a title if narration actually follows. A reply that is
+        # nothing but a title has failed, and saying so gets it retried instead
+        # of silently handing the chapter to the extractive script.
+        if rest.strip():
+            title = re.sub(r"[\"'*#\s]+$", "", line.strip())
+            text = rest
     else:
         # Models routinely ignore the TITLE: form and just write a bare heading
         # line. Left in, it is read aloud as the opening words of the first
@@ -1051,11 +1160,11 @@ def ollama_script(lines, span, target_words, model, host, chapter=None, previous
             title, text = first, rest
 
     text = re.sub(r"^[\"'*#\s]+|[\"'*\s]+$", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return (title, text) if text else None
+    return title, re.sub(r"\s+", " ", text)
 
 
-def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None):
+def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None,
+                  is_last=False):
     """One reel's script, as an editable text file beside the finished reels.
 
     Read back verbatim whenever the file already has something in it, which is
@@ -1076,7 +1185,8 @@ def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None):
     title, text = None, None
     if a.script == "ollama":
         got = ollama_script(lines, span, target, a.model, a.ollama_host,
-                            chapter=chapter, previous=previous)
+                            chapter=chapter, previous=previous,
+                            style=style_for(a), is_last=is_last)
         if got:
             title, text = got
     if not text:
@@ -1662,7 +1772,8 @@ def prepare(target, a, progress=None, with_scripts=True, need_video=True):
         # from.
         previous = " ".join(told)[-1500:] if told else None
         title, text = narration_for(lines, span, span["end"] - span["start"],
-                                    a, i, scripts_dir, previous=previous)
+                                    a, i, scripts_dir, previous=previous,
+                                    is_last=(i == len(spans)))
         ctx["scripts"].append(text)
         ctx["titles"].append(title)
         if text:
@@ -1887,6 +1998,13 @@ def build_parser():
 
     p.add_argument("--script", choices=["extractive", "ollama"], default="extractive",
                    help="how to write the narration (default extractive, no download)")
+    p.add_argument("--style", choices=sorted(STYLES), default=DEFAULT_STYLE,
+                   help="how the narration is written: "
+                        + "; ".join(f"{k} = {v['label']}"
+                                    for k, v in sorted(STYLES.items())))
+    p.add_argument("--style-file",
+                   help="a text file describing how to write, used instead of "
+                        "--style")
     p.add_argument("--model", default="llama3.2", help="Ollama model for --script ollama")
     p.add_argument("--ollama-host", default="http://127.0.0.1:11434")
 

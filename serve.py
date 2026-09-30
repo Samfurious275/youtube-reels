@@ -33,9 +33,15 @@ MAX_REELS = 10
 FITS = [("Keep the whole frame (blurred edges)", "blur"),
         ("Fill the screen (crops the sides)", "crop")]
 
+# The dropdown shows each style's description; this maps that back to its key.
+STYLE_LABELS = {f"{k} — {v['label']}": k for k, v in sorted(reels.STYLES.items())}
+STYLE_BY_LABEL = dict(STYLE_LABELS)
+DEFAULT_STYLE_LABEL = next(lbl for lbl, k in STYLE_LABELS.items()
+                           if k == reels.DEFAULT_STYLE)
+
 
 def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama,
-             story=False):
+             story=False, style=reels.DEFAULT_STYLE):
     """Turn the form into the same options object the command line builds.
 
     Defaults come from the CLI parser, so the page cannot drift away from what
@@ -52,18 +58,19 @@ def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_olla
     a.no_bg = not keep_music
     a.script = "ollama" if use_ollama else "extractive"
     a.highlights = not story
+    a.style = STYLE_BY_LABEL.get(style, reels.DEFAULT_STYLE)
     return a
 
 
 def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
-                keep_music, use_ollama, story, progress=gr.Progress()):
+                keep_music, use_ollama, story, style, progress=gr.Progress()):
     """Step one: find the stretches and write a script for each."""
     target = (url or "").strip() or upload
     if not target:
         raise gr.Error("Paste a link or choose a video file first.")
 
     a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
-                 use_ollama, story)
+                 use_ollama, story, style)
     reels.WORK.mkdir(exist_ok=True)
     reels.OUTPUT.mkdir(exist_ok=True)
 
@@ -104,7 +111,8 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
 
 
 def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
-               keep_music, use_ollama, story, *scripts, progress=gr.Progress()):
+               keep_music, use_ollama, story, style, *scripts,
+               progress=gr.Progress()):
     """Step two: save whatever is in the boxes, then render."""
     if not ctx:
         raise gr.Error("Press *Get the narration scripts* first.")
@@ -113,7 +121,7 @@ def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
     # affects rendering only, so changing your mind after reading the scripts
     # should work.
     a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
-                 use_ollama, story)
+                 use_ollama, story, style)
 
     scripts_dir = Path(ctx["scripts_dir"])
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -182,10 +190,14 @@ def build_ui():
                     info="Each part carries on from the last, covering the film "
                          "start to finish. Untick for separate highlights that "
                          "do not connect")
+                style = gr.Dropdown(
+                    list(STYLE_LABELS), value=DEFAULT_STYLE_LABEL,
+                    label="How the narration is written")
                 use_ollama = gr.Checkbox(
                     value=False, label="Write the narration with a local Ollama model",
-                    info="Much better writing. Needs Ollama running; falls back "
-                         "on its own if it is not there")
+                    info="Much better writing, and what the style setting acts "
+                         "on. Needs Ollama running; falls back on its own if "
+                         "it is not there")
 
                 gr.Markdown("### 2. How it should look and sound")
                 voice = gr.Dropdown(reels.SUGGESTED_VOICES,
@@ -216,7 +228,7 @@ def build_ui():
                 out_files = gr.Files(label="Every reel, subtitle and script")
 
         form = [url, upload, count, seconds, voice, fit, burn, cover, keep_music,
-                use_ollama, story]
+                use_ollama, story, style]
 
         step1.click(get_scripts, inputs=form,
                     outputs=[job, notes, step2, script_files] + boxes)

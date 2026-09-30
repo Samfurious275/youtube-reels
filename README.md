@@ -190,6 +190,28 @@ written beside it — the picture is just left clean.
 ./run.sh "URL" --cover-captions --no-burn
 ```
 
+### I want the narration written a particular way
+
+```bash
+./run.sh "URL" --style punchy       # the default
+./run.sh "URL" --style cinematic
+```
+
+- **`punchy`** — past tense, one idea per sentence, nothing but plot, and a
+  question to the viewer at the end of the last part. The fast style used by
+  story-recap shorts.
+- **`cinematic`** — present tense, longer sentences, steadier.
+
+Neither one fits? Write your own instructions in a text file and use that:
+
+```bash
+echo "Write in the past tense. Two sentences per beat. Dry and understated." > my-style.txt
+./run.sh "URL" --style-file my-style.txt
+```
+
+> Style only applies with `--script ollama`. The extractive default picks
+> sentences out of the transcript and cannot rewrite them into another tense.
+
 ### Other things you will want
 
 ```bash
@@ -561,6 +583,8 @@ picture is scaled up to 1080 wide.
 | `--reels 7` | how many to cut (default 7) |
 | `--duration 75` | seconds to aim at per reel (default 75) |
 | `--gap 180` | minimum seconds between two picks, so they spread across the film |
+| `--style punchy \| cinematic` | how the narration is written (default `punchy`) |
+| `--style-file FILE` | your own writing instructions, instead of `--style` |
 | `--script ollama` | real narration from a local model instead of extractive |
 | `--model llama3.2` | which Ollama model to use |
 | `--voice` / `--rate` | which neural voice, and how fast it speaks |

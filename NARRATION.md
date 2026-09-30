@@ -167,6 +167,31 @@ that appear, then press *Make the reels*.
 
 ---
 
+## Choosing how it is written
+
+`--style` sets the writing. The default is `punchy`:
+
+| Style | Reads like |
+| --- | --- |
+| `punchy` *(default)* | Past tense. One idea per sentence, about fourteen words at most, so each line lands as its own beat. Plot in every sentence — no atmosphere, no description. Speech reported, never quoted. The last part ends with a question to the viewer. |
+| `cinematic` | Present tense, longer sentences, steadier. |
+
+Writing your own is a text file of instructions:
+
+```bash
+echo "Past tense. Dry and understated. Never more than one clause." > my-style.txt
+./run.sh "URL" --style-file my-style.txt
+```
+
+Two things worth knowing:
+
+- **Style only applies with `--script ollama`.** The extractive default selects
+  sentences from the transcript; it cannot rewrite them into another tense.
+- **Bigger models follow it more closely.** On `llama3.2` (3B) most parts come
+  back in the right tense and the occasional one drifts into the present. If a
+  part comes out wrong, the quickest fix is to edit that one script by hand —
+  or pull a larger model and delete the script so it is written again.
+
 ## Choosing a voice
 
 ```bash
