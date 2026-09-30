@@ -530,14 +530,14 @@ def _norm(a):
     return np.clip((a - lo) / (hi - lo), 0, 1)
 
 
-def pick_highlights(video, lines, d, count, target, gap, start_frac, end_frac):
-    """The N most eventful non-overlapping stretches, in story order.
+def score_curve(video, lines, d, start_frac, end_frac):
+    """How worth watching each second is, on a one-second grid.
 
-    Scored on loudness and on how much is being said, because between them they
-    catch both the set pieces and the scenes that actually carry plot -- a reel
-    cut from a silent establishing shot has nothing to narrate. Picks are taken
-    greedily, best first, with a gap enforced around each one so all N do not
-    pile into the same ten minutes.
+    Loudness and how much is being said, because between them they catch both
+    the set pieces and the scenes that carry plot -- footage cut from a silent
+    establishing shot has nothing happening in it. The head and tail are marked
+    unusable outright: logos, cold opens and end credits are never what you
+    want, and they sit at predictable ends of the runtime.
     """
     import numpy as np
 
@@ -553,12 +553,71 @@ def pick_highlights(video, lines, d, count, target, gap, start_frac, end_frac):
     speech = speech_curve(lines, seconds)[:seconds]
 
     score = 0.5 * _norm(loud) + 0.5 * _norm(speech)
-
-    # Logos, cold opens and end credits are never what you want, and they sit at
-    # predictable ends of the runtime.
     score[:int(seconds * start_frac)] = -1
     score[int(seconds * (1 - end_frac)):] = -1
+    return score, seconds, total
 
+
+def story_spans(video, lines, d, count, target, start_frac, end_frac):
+    """Consecutive chapters covering the film in order, for a recap series.
+
+    This is a different job from picking highlights. A recap tells the story
+    from beginning to end across several parts, so the film is divided into N
+    chapters that between them cover the whole runtime, and each reel is one
+    chapter. Nothing is skipped and nothing is told out of order.
+
+    Each chapter narrates its whole stretch -- which may be ten minutes of film
+    -- while showing only the best minute or so of footage from inside it. That
+    is how these recaps work: the voice covers the plot, the picture shows the
+    part worth looking at.
+    """
+    import numpy as np
+
+    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
+    lo = int(seconds * start_frac)
+    hi = int(seconds * (1 - end_frac))
+    if hi - lo < count:
+        sys.exit(f"This video is only {hhmmss(total)} long; nothing to cut up.")
+
+    win = min(int(target), max(5, (hi - lo) // count))
+    cum = np.concatenate([[0.0], np.cumsum(score)])
+
+    spans = []
+    edges = np.linspace(lo, hi, count + 1).astype(int)
+    for i in range(count):
+        c0, c1 = int(edges[i]), int(edges[i + 1])
+        # Best window for the footage, taken from inside this chapter only, so
+        # the picture always belongs to the part of the story being told.
+        last = max(c0, c1 - win)
+        if last > c0:
+            means = (cum[c0 + win:last + win + 1] - cum[c0:last + 1]) / win
+            at = c0 + int(np.argmax(means))
+        else:
+            at = c0
+        start = snap_to_cut(video, float(at), d)
+        spans.append({
+            "start": round(start, 2),
+            "end": round(min(start + target, total), 2),
+            # The stretch of story this chapter is responsible for narrating.
+            "narr_start": round(c0, 2),
+            "narr_end": round(c1, 2),
+            "chapter": i + 1,
+        })
+    return spans
+
+
+def pick_highlights(video, lines, d, count, target, gap, start_frac, end_frac):
+    """The N most eventful non-overlapping stretches, in story order.
+
+    Scored on loudness and on how much is being said, because between them they
+    catch both the set pieces and the scenes that actually carry plot -- a reel
+    cut from a silent establishing shot has nothing to narrate. Picks are taken
+    greedily, best first, with a gap enforced around each one so all N do not
+    pile into the same ten minutes.
+    """
+    import numpy as np
+
+    score, seconds, total = score_curve(video, lines, d, start_frac, end_frac)
     win = int(target)
     if seconds <= win:
         sys.exit(f"This video is only {hhmmss(total)} long; nothing to cut up.")
@@ -735,8 +794,32 @@ def clean_line(text):
 
 
 def lines_in(lines, span):
-    return [ln for ln in lines
-            if ln["end"] > span["start"] and ln["start"] < span["end"]]
+    """The transcript this reel narrates.
+
+    In story mode that is the whole chapter, which is far longer than the
+    footage shown -- the voice covers the plot while the picture shows the best
+    part of it. Everywhere else the two are the same stretch.
+    """
+    start = span.get("narr_start", span["start"])
+    end = span.get("narr_end", span["end"])
+    return [ln for ln in lines if ln["end"] > start and ln["start"] < end]
+
+
+def split_script(raw):
+    """Split a script file into its title and the words to be spoken.
+
+    Lines starting with # are notes: the chapter title the generator wrote, and
+    anything you jot down yourself. They are kept in the file and never read
+    aloud, which is what lets one file per reel hold both.
+    """
+    title, body = None, []
+    for ln in raw.splitlines():
+        if ln.strip().startswith("#"):
+            if title is None:
+                title = ln.strip().lstrip("#").strip()
+        else:
+            body.append(ln)
+    return title, " ".join(" ".join(body).split())
 
 
 def extractive_script(lines, span, target_words):
@@ -789,11 +872,11 @@ uh um going get got know really right now one see said says come came go went ab
 """.split())
 
 
-def ollama_script(lines, span, target_words, model, host):
+def ollama_script(lines, span, target_words, model, host, chapter=None, previous=None):
     """Ask a local Ollama model for real narration. Free, offline, no key.
 
-    Returns None on any failure so the caller can fall back rather than abort a
-    long render over a model that is not pulled.
+    Returns (title, text), or None on any failure so the caller can fall back
+    rather than abort a long render over a model that is not pulled.
     """
     import urllib.error
     import urllib.request
@@ -803,38 +886,96 @@ def ollama_script(lines, span, target_words, model, host):
     if len(excerpt.split()) < 12:
         return None
 
-    prompt = (
-        "Below is the transcript of one scene from a film.\n\n"
-        f"TRANSCRIPT:\n{excerpt}\n\n"
-        f"Write about {target_words} words of voiceover narration for a vertical "
-        "short built from this scene. Describe what happens in the third person, "
-        "present tense, in a plain confident voice. Open with a line that makes "
-        "someone stop scrolling. Do not quote dialogue, do not use speaker names "
-        "you were not given, do not write stage directions, headings, bullet "
-        "points or quotation marks. Reply with the narration only.")
+    rules = ("Retell what happens as a story, in the third person and the present "
+             "tense, in plain confident sentences. Use characters' names as the "
+             "transcript gives them. Keep sentences short. Do not quote dialogue, "
+             "do not address the viewer, do not comment on the film or call it a "
+             "film, and do not write stage directions, headings, bullet points or "
+             "quotation marks.")
+
+    if chapter:
+        # A recap runs across several parts, so each one has to pick up exactly
+        # where the last stopped: told what has already been covered, the model
+        # continues instead of re-introducing everyone from scratch.
+        so_far = ""
+        if previous:
+            so_far = (
+                f"THE PREVIOUS PART ENDED WITH THESE EXACT WORDS:\n"
+                f"...{previous}\n\n"
+                f"Carry on from that moment. Do not retell any of it, do not "
+                f"begin by summarising, and do not re-introduce anyone already "
+                f"named there -- the viewer has just heard it.\n\n")
+        prompt = (
+            f"You are writing part {chapter} of a recap of one film, narrated in "
+            f"order from beginning to end.\n\n"
+            f"{so_far}"
+            f"TRANSCRIPT OF THIS PART OF THE FILM:\n{excerpt}\n\n"
+            f"Write about {target_words} words covering what happens in this "
+            f"part. {rules} "
+            + ("Continue straight on from the story so far, without recapping it "
+               "and without any greeting or introduction. "
+               if previous else
+               "Open with the situation and who it happens to. ")
+            + "First give a short chapter title of at most six words on its own "
+              "first line, in the form 'TITLE: <the title>'. Then write the "
+              "narration. Reply with nothing else.")
+    else:
+        prompt = (
+            "Below is the transcript of one scene from a film.\n\n"
+            f"TRANSCRIPT:\n{excerpt}\n\n"
+            f"Write about {target_words} words of voiceover narration for a "
+            f"vertical short built from this scene. {rules} Open with a line "
+            "that makes someone stop scrolling. Reply with the narration only.")
 
     body = json.dumps({
         "model": model, "prompt": prompt, "stream": False,
-        "options": {"temperature": 0.7, "num_predict": int(target_words * 2.2)},
+        "options": {"temperature": 0.7, "num_predict": int(target_words * 2.4)},
     }).encode()
     req = urllib.request.Request(f"{host.rstrip('/')}/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=300) as r:
-            text = json.loads(r.read()).get("response", "")
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
-        print(f"    ollama unavailable ({e}); using the extractive script")
-        return None
+    # Tried twice, because one dropped call quietly costs a whole chapter: the
+    # fallback keeps the run alive but drops that part to the extractive script,
+    # which in a recap series reads jarringly unlike the ones either side of it.
+    text = ""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                text = json.loads(r.read()).get("response", "")
+            break
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+            if attempt == 0:
+                print(f"    ollama call failed ({e}); retrying once")
+                continue
+            print(f"    ollama unavailable ({e}); using the extractive script")
+            return None
 
     # Models like to open with "Here is the narration:" and to wrap the whole
     # thing in quotes; neither belongs in something that gets read aloud.
     text = re.sub(r"^\s*(here'?s?|sure|okay)[^\n:]*:\s*", "", text.strip(), flags=re.I)
+
+    title = None
+    m = re.match(r"^\s*[\"'*#\s]*title\s*:\s*(.+)", text, flags=re.I)
+    if m:
+        line, _, rest = m.group(1).partition("\n")
+        title = re.sub(r"[\"'*#\s]+$", "", line.strip())
+        text = rest
+    else:
+        # Models routinely ignore the TITLE: form and just write a bare heading
+        # line. Left in, it is read aloud as the opening words of the first
+        # sentence -- so treat a short, unpunctuated opening line followed by
+        # real text as the title it plainly is.
+        first, _, rest = text.partition("\n")
+        first = first.strip().strip("\"'*#").strip()
+        if (rest.strip() and 0 < len(first.split()) <= 8
+                and not first.endswith((".", "!", "?", ",", ";", ":"))):
+            title, text = first, rest
+
     text = re.sub(r"^[\"'*#\s]+|[\"'*\s]+$", "", text)
     text = re.sub(r"\s+", " ", text)
-    return text or None
+    return (title, text) if text else None
 
 
-def narration_for(lines, span, seconds, a, index, scripts_dir):
+def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None):
     """One reel's script, as an editable text file beside the finished reels.
 
     Read back verbatim whenever the file already has something in it, which is
@@ -845,15 +986,19 @@ def narration_for(lines, span, seconds, a, index, scripts_dir):
     scripts_dir.mkdir(parents=True, exist_ok=True)
     cache = scripts_dir / f"reel-{index:02d}.txt"
     if cache.exists():
-        text = cache.read_text(encoding="utf-8").strip()
+        title, text = split_script(cache.read_text(encoding="utf-8"))
         if text:
             print(f"    script (yours): {len(text.split())} words")
-            return text
+            return title, text
 
     target = int(seconds * WORDS_PER_SECOND)
-    text = None
+    chapter = span.get("chapter")
+    title, text = None, None
     if a.script == "ollama":
-        text = ollama_script(lines, span, target, a.model, a.ollama_host)
+        got = ollama_script(lines, span, target, a.model, a.ollama_host,
+                            chapter=chapter, previous=previous)
+        if got:
+            title, text = got
     if not text:
         text = extractive_script(lines, span, target)
     if not text:
@@ -863,10 +1008,15 @@ def narration_for(lines, span, seconds, a, index, scripts_dir):
         # one that silently disappears.
         cache.touch()
         print("    script: empty (nothing said in this stretch)")
-        return ""
-    cache.write_text(text, encoding="utf-8")
-    print(f"    script: {len(text.split())} words")
-    return text
+        return None, ""
+
+    if chapter and not title:
+        title = f"Part {chapter}"
+    header = f"# {title}\n\n" if title else ""
+    cache.write_text(header + text, encoding="utf-8")
+    print(f"    script: {len(text.split())} words"
+          + (f"   {title}" if title else ""))
+    return title, text
 
 
 # ---------------------------------------------------------------- 5. voice
@@ -1368,14 +1518,27 @@ def prepare(target, a, progress=None, with_scripts=True):
 
     print("\n[3/4] picking the best stretches")
     step(0.55, "Scoring the runtime and picking the best stretches")
-    spans = load_json(d / f"spans-{a.reels}-{a.duration}.json")
+    mode = "best" if a.highlights else "story"
+    cache = d / f"spans-{mode}-{a.reels}-{a.duration}.json"
+    spans = load_json(cache)
     if spans is None:
-        spans = pick_highlights(video, lines, d, a.reels, a.duration, a.gap,
+        if a.highlights:
+            spans = pick_highlights(video, lines, d, a.reels, a.duration, a.gap,
+                                    a.skip_start, a.skip_end)
+        else:
+            spans = story_spans(video, lines, d, a.reels, a.duration,
                                 a.skip_start, a.skip_end)
-        save_json(d / f"spans-{a.reels}-{a.duration}.json", spans)
+        save_json(cache, spans)
     for i, s in enumerate(spans, 1):
-        preview = " ".join(clean_line(ln["text"]) for ln in lines_in(lines, s))[:100]
-        print(f"  reel {i:02d}  {hhmmss(s['start'])} - {hhmmss(s['end'])}   {preview}")
+        if not a.highlights:
+            print(f"  part {i:02d}  narrates {hhmmss(s['narr_start'])} - "
+                  f"{hhmmss(s['narr_end'])}, shows "
+                  f"{hhmmss(s['start'])} - {hhmmss(s['end'])}")
+        else:
+            preview = " ".join(clean_line(ln["text"])
+                               for ln in lines_in(lines, s))[:100]
+            print(f"  reel {i:02d}  {hhmmss(s['start'])} - {hhmmss(s['end'])}"
+                  f"   {preview}")
 
     out_dir = OUTPUT / slugify(title)
     scripts_dir = out_dir / "scripts"
@@ -1386,12 +1549,23 @@ def prepare(target, a, progress=None, with_scripts=True):
         return ctx
 
     print("\n[4/4] narration scripts")
+    ctx["titles"] = []
+    told = []
     for i, span in enumerate(spans, 1):
         step(0.60 + 0.38 * (i - 1) / len(spans),
              f"Writing narration {i} of {len(spans)}")
         print(f"  reel {i:02d}")
-        ctx["scripts"].append(
-            narration_for(lines, span, span["end"] - span["start"], a, i, scripts_dir))
+        # Only the tail of the story so far is carried forward. It is there to
+        # stop the next part re-introducing everyone, and a whole film's worth
+        # of it would crowd out the transcript the model actually has to work
+        # from.
+        previous = " ".join(told)[-1500:] if told else None
+        title, text = narration_for(lines, span, span["end"] - span["start"],
+                                    a, i, scripts_dir, previous=previous)
+        ctx["scripts"].append(text)
+        ctx["titles"].append(title)
+        if text:
+            told.append(text)
     step(1.0, "Scripts ready")
     return ctx
 
@@ -1430,8 +1604,8 @@ def build(ctx, a, progress=None):
         base = 0.03 + 0.95 * (i - 1) / len(spans)
         span_frac = 0.95 / len(spans)
         step(base, f"Reel {i} of {len(spans)}: reading the narration")
-        text = narration_for(lines, span, span["end"] - span["start"], a, i,
-                             scripts_dir)
+        title, text = narration_for(lines, span, span["end"] - span["start"], a, i,
+                                    scripts_dir)
         if not text:
             print("    nothing said in this stretch; skipping")
             continue
@@ -1484,7 +1658,8 @@ def build(ctx, a, progress=None):
             srt.unlink(missing_ok=True)
             srt = None
         render(video, span, audio, caps, srt, out, crop, a, band)
-        made.append({"file": out.name, "source_start": span["start"],
+        made.append({"file": out.name, "title": title,
+                     "source_start": span["start"],
                      "source_end": round(span["end"], 2), "seconds": round(dur, 1),
                      "narration": text})
         print(f"  -> {out}")
@@ -1524,9 +1699,11 @@ def make_reels(target, a, progress=None):
     if a.scripts:
         print(f"\nScripts written to {ctx['scripts_dir']}")
         empty = 0
-        for i, text in enumerate(ctx["scripts"], 1):
+        titles = ctx.get("titles") or [None] * len(ctx["scripts"])
+        for i, (text, title) in enumerate(zip(ctx["scripts"], titles), 1):
             if text:
-                print(f"  reel-{i:02d}.txt   {len(text.split())} words")
+                print(f"  reel-{i:02d}.txt   {len(text.split())} words"
+                      + (f"   {title}" if title else ""))
             else:
                 empty += 1
                 print(f"  reel-{i:02d}.txt   empty -- write this one yourself "
@@ -1605,6 +1782,11 @@ def build_parser():
                    help="hardware encoder: much quicker, slightly softer picture")
     p.add_argument("--plan", action="store_true",
                    help="print the stretches that would be cut, render nothing")
+    p.add_argument("--highlights", action="store_true",
+                   help="separate best moments that do not connect to each "
+                        "other. The default instead makes a recap series: "
+                        "consecutive parts telling the story in order, each "
+                        "carrying on from the last")
     p.add_argument("--scripts", action="store_true",
                    help="write the narration scripts and stop, so you can read "
                         "and edit them before anything is rendered")

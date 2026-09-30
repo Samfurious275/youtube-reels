@@ -34,7 +34,8 @@ FITS = [("Keep the whole frame (blurred edges)", "blur"),
         ("Fill the screen (crops the sides)", "crop")]
 
 
-def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama):
+def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama,
+             story=False):
     """Turn the form into the same options object the command line builds.
 
     Defaults come from the CLI parser, so the page cannot drift away from what
@@ -50,17 +51,19 @@ def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_olla
     a.cover_captions = bool(cover)
     a.no_bg = not keep_music
     a.script = "ollama" if use_ollama else "extractive"
+    a.highlights = not story
     return a
 
 
 def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
-                keep_music, use_ollama, progress=gr.Progress()):
+                keep_music, use_ollama, story, progress=gr.Progress()):
     """Step one: find the stretches and write a script for each."""
     target = (url or "").strip() or upload
     if not target:
         raise gr.Error("Paste a link or choose a video file first.")
 
-    a = settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama)
+    a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
+                 use_ollama, story)
     reels.WORK.mkdir(exist_ok=True)
     reels.OUTPUT.mkdir(exist_ok=True)
 
@@ -68,14 +71,17 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
                         progress=lambda frac, desc: progress(frac, desc=desc))
     spans, scripts = ctx["spans"], ctx["scripts"]
 
+    titles = ctx.get("titles") or [None] * len(spans)
     boxes = []
     for i in range(MAX_REELS):
         if i < len(spans):
-            s = spans[i]
+            s, t = spans[i], titles[i]
+            where = (f"narrates {reels.hhmmss(s['narr_start'])} – "
+                     f"{reels.hhmmss(s['narr_end'])}" if "narr_start" in s
+                     else f"{reels.hhmmss(s['start'])} – {reels.hhmmss(s['end'])}")
             boxes.append(gr.update(
                 visible=True, value=scripts[i],
-                label=f"Reel {i + 1}  ({reels.hhmmss(s['start'])} – "
-                      f"{reels.hhmmss(s['end'])} of the source)"))
+                label=f"Reel {i + 1}" + (f" · {t}" if t else "") + f"  ({where})"))
         else:
             boxes.append(gr.update(visible=False, value=""))
 
@@ -92,7 +98,7 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
 
 
 def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
-               keep_music, use_ollama, *scripts, progress=gr.Progress()):
+               keep_music, use_ollama, story, *scripts, progress=gr.Progress()):
     """Step two: save whatever is in the boxes, then render."""
     if not ctx:
         raise gr.Error("Press *Get the narration scripts* first.")
@@ -100,13 +106,19 @@ def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
     # Read the options again rather than reusing step one's: everything here
     # affects rendering only, so changing your mind after reading the scripts
     # should work.
-    a = settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama)
+    a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
+                 use_ollama, story)
 
     scripts_dir = Path(ctx["scripts_dir"])
     scripts_dir.mkdir(parents=True, exist_ok=True)
+    titles = ctx.get("titles") or [None] * len(ctx["spans"])
     for i, text in enumerate(scripts[:len(ctx["spans"])], 1):
-        (scripts_dir / f"reel-{i:02d}.txt").write_text(
-            (text or "").strip(), encoding="utf-8")
+        # The title lives in the file as a # comment, and the box only ever held
+        # the spoken words, so put it back rather than losing it on save.
+        body = (text or "").strip()
+        title = titles[i - 1]
+        head = f"# {title}\n\n" if title and body else ""
+        (scripts_dir / f"reel-{i:02d}.txt").write_text(head + body, encoding="utf-8")
 
     out_dir, made = reels.build(
         ctx, a, progress=lambda frac, desc: progress(frac, desc=desc))
@@ -120,9 +132,10 @@ def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
 
     rows = [f"**{len(made)} reels** in `{out_dir}`", ""]
     for m, mp4 in zip(made, mp4s):
-        rows.append(f"- **{mp4.name}** — {reels.hhmmss(m['source_start'])} to "
-                    f"{reels.hhmmss(m['source_end'])} of the source, "
-                    f"{m['seconds']:.0f}s long")
+        rows.append(f"- **{mp4.name}**"
+                    + (f" · {m['title']}" if m.get("title") else "")
+                    + f" — {m['seconds']:.0f}s, from "
+                      f"{reels.hhmmss(m['source_start'])}")
     rows.append(f"\nWorking cache is now "
                 f"{reels.human_size(reels.dir_size(reels.WORK))}. "
                 f"Free it any time with `--clean`.")
@@ -156,6 +169,12 @@ def build_ui():
                                   label="How many reels")
                 seconds = gr.Slider(30, 150, value=75, step=5,
                                     label="Seconds per reel (roughly)")
+                story = gr.Checkbox(
+                    value=True,
+                    label="Recap series — tell the whole story in order",
+                    info="Each part carries on from the last, covering the film "
+                         "start to finish. Untick for separate highlights that "
+                         "do not connect")
                 use_ollama = gr.Checkbox(
                     value=False, label="Write the narration with a local Ollama model",
                     info="Much better writing. Needs Ollama running; falls back "
@@ -189,7 +208,7 @@ def build_ui():
                 out_files = gr.Files(label="Every reel, subtitle and script")
 
         form = [url, upload, count, seconds, voice, fit, burn, cover, keep_music,
-                use_ollama]
+                use_ollama, story]
 
         step1.click(get_scripts, inputs=form,
                     outputs=[job, notes, step2] + boxes)

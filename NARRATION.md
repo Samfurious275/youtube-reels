@@ -10,6 +10,38 @@ are where the quality actually comes from**, and where you have the most control
 
 ---
 
+## A recap series, not separate clips
+
+By default the reels form **one continuous recap**: the film is split into
+consecutive chapters that between them cover the whole runtime, and each part is
+written knowing what the previous one already said. Part 2 carries on from where
+Part 1 stopped rather than re-introducing everyone.
+
+Each chapter narrates its *whole* stretch of story while showing only the best
+minute of footage from inside it — the voice covers the plot, the picture shows
+the part worth looking at.
+
+Each part also gets a chapter title. It is stored as a `#` comment on the first
+line of the script file:
+
+```
+# The Boat Under the Tarpaulin
+
+Idris takes her to the boat yard and pulls back the cover...
+```
+
+**Lines starting with `#` are never spoken.** They are there for the title and
+for any notes you want to leave yourself. Everything else in the file is read
+aloud.
+
+Continuity and the titles both come from the local model — with the extractive
+default you get a chronological digest of each chapter instead, and plain
+`Part 1`, `Part 2` titles. This is the mode where `--script ollama` matters most.
+
+For separate, unconnected highlights instead, use `--highlights`.
+
+---
+
 ## What you need
 
 | For | You need | Cost |

@@ -2,9 +2,11 @@
 
 Turn one long video into 5–10 vertical shorts, ready to upload.
 
-Give it a link. It picks the best stretches, **removes the voices of the people
-talking**, keeps the music and sound effects, puts an **AI narrator** over the
-top, and burns **karaoke captions** into a 1080×1920 frame.
+Give it a link. It makes a **recap series** — Part 1, Part 2, Part 3 — that tells
+the story in order from beginning to end, each part carrying on from where the
+last stopped. It **removes the voices of the people talking**, keeps the music
+and sound effects, puts an **AI narrator** over the top, and burns **karaoke
+captions** into a 1080×1920 frame.
 
 It works in **two steps**, so you are never waiting an hour to find out you
 hated the writing:
@@ -49,6 +51,39 @@ identical** — every example works on both, so only the first is shown twice.
 > **Windows: always put the link in double quotes.** YouTube links contain `&`,
 > which Windows reads as "end of command". Without quotes you get the wrong
 > video or a confusing error.
+
+### I want a recap series that tells the whole story in order
+
+**This is the default** — no flag needed:
+
+```bash
+./run.sh "URL" --reels 6
+```
+
+The film is divided into six consecutive chapters that between them cover the
+whole runtime. Nothing is skipped and nothing is told out of order. Each part
+**narrates its whole chapter** — which may be fifteen minutes of film — while
+**showing the best minute of footage** from inside it, which is how these recaps
+work: the voice covers the plot, the picture shows the part worth looking at.
+
+```
+part 01  narrates 0:02:10 - 0:17:40, shows 0:05:12 - 0:06:27
+part 02  narrates 0:17:40 - 0:33:10, shows 0:21:44 - 0:22:59
+```
+
+Each part is written knowing what the previous one already said, so Part 2 picks
+up where Part 1 stopped instead of re-introducing everyone. Each also gets a
+chapter title, kept in its script file and in `manifest.json`.
+
+> **Use a local model for this.** Continuity and titles come from
+> `--script ollama`. Without it you get a chronological digest of the dialogue
+> instead of written narration. See **[NARRATION.md](NARRATION.md)**.
+
+Want the old behaviour — separate best moments that do not connect?
+
+```bash
+./run.sh "URL" --highlights
+```
 
 ### I want to see the narration scripts, and edit them before anything is made
 
@@ -181,7 +216,7 @@ reel-01.mp4        1080x1920, captions burned in, plus an English subtitle track
 reel-01.srt        the same subtitles as a file, for uploading
 reel-02.mp4        ...and so on
 scripts/           the narration scripts -- edit these and re-run
-manifest.json      which part of the source each reel came from
+manifest.json      chapter titles, and which part of the source each reel used
 ```
 
 Each reel carries the narration **three ways**, because each is needed somewhere
@@ -489,6 +524,7 @@ picture is scaled up to 1080 wide.
 
 | Flag | Does |
 | --- | --- |
+| `--highlights` | separate best moments instead of the default recap series |
 | `--scripts` | write the narration scripts and stop, so you can read and edit them |
 | `--plan` | show the stretches it would cut, write and render nothing |
 | `--clean` | delete the working cache and exit; reels and scripts are kept |
