@@ -78,6 +78,19 @@ Each part is written knowing what the previous one already said, so Part 2 picks
 up where Part 1 stopped instead of re-introducing everyone. Each also gets a
 chapter title, kept in its script file and in `manifest.json`.
 
+**The picture travels with the narration.** A part narrates its whole chapter —
+often half an hour of story — so showing one continuous minute of footage would
+leave the voice describing events that are nowhere on screen. Instead each reel
+is cut from a dozen or so short clips spread across the chapter, so the picture
+moves through the story at roughly the pace the narration does:
+
+```
+footage: 12 clips of 8.1s from across 0:37:37-1:12:56
+```
+
+`--clip-seconds` sets how long each clip runs (default 8). `--no-montage` goes
+back to one continuous stretch.
+
 > **A local model does the writing.** It is used automatically when one is
 > running. Without one, the script is picked out of the transcript instead, and
 > on a film that reads as the characters talking rather than as narration — so
@@ -599,6 +612,8 @@ picture is scaled up to 1080 wide.
 
 | Flag | Does |
 | --- | --- |
+| `--clip-seconds 8` | length of each clip in the montage |
+| `--no-montage` | one continuous stretch per reel instead of cutting between clips |
 | `--highlights` | separate best moments instead of the default recap series |
 | `--scripts` | download only the transcript, write the narration scripts and stop — no video fetched |
 | `--plan` | show the stretches it would cut, write and render nothing |

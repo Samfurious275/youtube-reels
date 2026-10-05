@@ -1930,6 +1930,52 @@ def regenerate_script(ctx, a, index):
                          is_last=(index == len(ctx["spans"])))
 
 
+def montage_starts(score, c0, c1, count, clip_len):
+    """Where each short clip of a montage should begin.
+
+    Spread evenly across the chapter so the picture travels through the story at
+    roughly the pace the narration does, then nudged within its own slice to the
+    liveliest moment there, so no clip opens on a held shot of nothing.
+    """
+    import numpy as np
+
+    starts = []
+    slice_len = max((c1 - c0) / max(count, 1), 1.0)
+    w = max(int(clip_len), 1)
+    cum = np.concatenate([[0.0], np.cumsum(score)])
+    for i in range(count):
+        a0 = int(c0 + slice_len * i)
+        a1 = int(min(a0 + slice_len, c1) - clip_len)
+        lo, hi = max(0, a0), min(len(score) - w, a1)
+        if hi <= lo:
+            starts.append(float(max(0, min(a0, len(score) - w))))
+            continue
+        means = (cum[lo + w:hi + w + 1] - cum[lo:hi + 1]) / w
+        starts.append(float(lo + int(np.argmax(means))))
+    return starts
+
+
+def build_montage(video, starts, clip_len, out):
+    """Join several short clips of the source into one piece of footage.
+
+    One pass: every clip is seeked, trimmed and concatenated together, with the
+    timestamps reset so they play back to back. Normalised to one frame rate
+    because concat refuses inputs that disagree.
+    """
+    inputs, chain, labels = [], [], []
+    for i, start in enumerate(starts):
+        inputs += ["-ss", f"{start:.3f}", "-t", f"{clip_len:.3f}", "-i", str(video)]
+        chain.append(f"[{i}:v]fps={FPS},setsar=1,setpts=PTS-STARTPTS[v{i}]")
+        chain.append(f"[{i}:a]aresample=async=1,asetpts=PTS-STARTPTS[a{i}]")
+        labels.append(f"[v{i}][a{i}]")
+    chain.append("".join(labels) + f"concat=n={len(starts)}:v=1:a=1[v][a]")
+    return ffmpeg_cached(
+        out, *inputs, "-filter_complex", ";".join(chain),
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-b:a", "192k")
+
+
 def build(ctx, a, progress=None, only=None):
     """Render the reels from an already-prepared job.
 
@@ -1980,6 +2026,15 @@ def build(ctx, a, progress=None, only=None):
 
     step(0.02, "Looking at the picture")
     crop = detect_letterbox(video, d)
+
+    # A recap's narration covers a whole chapter, so a single continuous window
+    # cannot illustrate it -- the voice moves through half an hour of story
+    # while the picture sits on one shot. Cutting between clips spread across
+    # the chapter keeps the two travelling together.
+    cutting = bool(spans and "narr_start" in spans[0] and not a.no_montage)
+    mscore = None
+    if cutting:
+        mscore, _, _ = score_curve(video, lines, d, a.skip_start, a.skip_end)
     band = detect_caption_band(video, d) if a.cover_captions else None
     font = find_font(a.font)
     if not font and not a.no_burn:
@@ -2019,14 +2074,30 @@ def build(ctx, a, progress=None, only=None):
         dur = span["end"] - span["start"]
         print(f"    narration {narr:.1f}s -> reel {dur:.1f}s")
 
+        src_video, src_span = video, span
+        if cutting:
+            pieces = max(2, int(round(dur / max(a.clip_seconds, 2.0))))
+            clip_len = dur / pieces
+            step(base + span_frac * 0.22,
+                 f"Reel {i} of {len(spans)}: cutting {pieces} clips together")
+            starts = montage_starts(mscore, span["narr_start"], span["narr_end"],
+                                    pieces, clip_len)
+            starts = [snap_to_cut(video, t, d, window=2.5) for t in starts]
+            print(f"    footage: {pieces} clips of {clip_len:.1f}s from across "
+                  f"{hhmmss(span['narr_start'])}-{hhmmss(span['narr_end'])}")
+            src_video = build_montage(video, starts, clip_len,
+                                      d / f"montage-{i:02d}.mp4")
+            src_span = {"start": 0.0, "end": duration_of(src_video)}
+            dur = src_span["end"]
+
         clip_audio = d / f"clip-{i:02d}.wav"
         bed = None
         if not a.no_bg:
             step(base + span_frac * 0.30,
                  f"Reel {i} of {len(spans)}: removing the dialogue (slow)")
             if not clip_audio.exists():
-                ffmpeg_cached(clip_audio, "-ss", f"{span['start']:.3f}",
-                              "-t", f"{dur:.3f}", "-i", str(video), "-vn",
+                ffmpeg_cached(clip_audio, "-ss", f"{src_span['start']:.3f}",
+                              "-t", f"{dur:.3f}", "-i", str(src_video), "-vn",
                               "-ac", "2", "-ar", str(SAMPLE_RATE))
             bed = background_bed(clip_audio, d, i, a.demucs_model)
 
@@ -2053,7 +2124,7 @@ def build(ctx, a, progress=None, only=None):
         else:
             srt.unlink(missing_ok=True)
             srt = None
-        render(video, span, audio, caps, srt, out, crop, a, band)
+        render(src_video, src_span, audio, caps, srt, out, crop, a, band)
         made.append({"file": out.name, "title": title,
                      "source_start": span["start"],
                      "source_end": round(span["end"], 2), "seconds": round(dur, 1),
@@ -2196,6 +2267,11 @@ def build_parser():
                    help="hardware encoder: much quicker, slightly softer picture")
     p.add_argument("--plan", action="store_true",
                    help="print the stretches that would be cut, render nothing")
+    p.add_argument("--clip-seconds", type=float, default=8.0,
+                   help="length of each clip in the montage (default 8)")
+    p.add_argument("--no-montage", action="store_true",
+                   help="show one continuous stretch per reel instead of "
+                        "cutting between clips from across the chapter")
     p.add_argument("--highlights", action="store_true",
                    help="separate best moments that do not connect to each "
                         "other. The default instead makes a recap series: "

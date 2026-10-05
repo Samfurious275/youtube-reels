@@ -42,7 +42,7 @@ DEFAULT_STYLE_LABEL = next(lbl for lbl, k in STYLE_LABELS.items()
 
 
 def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_ollama,
-             story=False, style=reels.DEFAULT_STYLE):
+             story=False, style=reels.DEFAULT_STYLE, montage=True):
     """Turn the form into the same options object the command line builds.
 
     Defaults come from the CLI parser, so the page cannot drift away from what
@@ -60,18 +60,20 @@ def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_olla
     a.script = "auto" if use_ollama else "extractive"
     a.highlights = not story
     a.style = STYLE_BY_LABEL.get(style, reels.DEFAULT_STYLE)
+    a.no_montage = not montage
     return a
 
 
 def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
-                keep_music, use_ollama, story, style, progress=gr.Progress()):
+                keep_music, use_ollama, story, style, montage,
+                progress=gr.Progress()):
     """Step one: find the stretches and write a script for each."""
     target = (url or "").strip() or upload
     if not target:
         raise gr.Error("Paste a link or choose a video file first.")
 
     a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
-                 use_ollama, story, style)
+                 use_ollama, story, style, montage)
     reels.WORK.mkdir(exist_ok=True)
     reels.OUTPUT.mkdir(exist_ok=True)
 
@@ -119,7 +121,7 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     return [ctx, "\n".join(note), gr.update(visible=True), files] + rows + boxes
 
 
-FORM_LEN = 12          # how many inputs the settings form has, before the scripts
+FORM_LEN = 13          # how many inputs the settings form has, before the scripts
 
 
 def render(ctx, form_values, scripts, only, progress):
@@ -259,6 +261,12 @@ def build_ui():
                 cover = gr.Checkbox(
                     value=False, label="Blur out subtitles already burned into the video",
                     info="Use when the source has hardcoded subtitles you want gone")
+                montage = gr.Checkbox(
+                    value=True,
+                    label="Cut between clips from across the part",
+                    info="The narration covers the whole part, so the picture "
+                         "moves through it too. Untick to sit on one continuous "
+                         "stretch instead")
 
                 step1 = gr.Button("Get the narration scripts", variant="primary")
 
@@ -285,7 +293,7 @@ def build_ui():
                 out_files = gr.Files(label="Every reel, subtitle and script")
 
         form = [url, upload, count, seconds, voice, fit, burn, cover, keep_music,
-                use_ollama, story, style]
+                use_ollama, story, style, montage]
         assert len(form) == FORM_LEN
 
         step1.click(get_scripts, inputs=form,

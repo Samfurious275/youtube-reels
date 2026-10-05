@@ -17,9 +17,10 @@ consecutive chapters that between them cover the whole runtime, and each part is
 written knowing what the previous one already said. Part 2 carries on from where
 Part 1 stopped rather than re-introducing everyone.
 
-Each chapter narrates its *whole* stretch of story while showing only the best
-minute of footage from inside it — the voice covers the plot, the picture shows
-the part worth looking at.
+Each chapter narrates its *whole* stretch of story — often half an hour of it.
+The footage keeps up by cutting between a dozen or so short clips spread across
+that chapter, rather than sitting on one continuous minute, so the picture moves
+through the story at roughly the pace the voice does.
 
 Each part also gets a chapter title. It is stored as a `#` comment on the first
 line of the script file:
