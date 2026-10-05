@@ -1540,7 +1540,13 @@ def caption_video(chunks, duration, d, index, font_path, size_frac, color):
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    out = d / f"captions-{index:02d}.mov"
+    # Named after what it draws, not just which reel it belongs to. Keying on
+    # the number alone meant a rewritten script kept the previous script's
+    # captions, so the words on screen were not the words being spoken.
+    key = hashlib.sha1(
+        json.dumps([chunks, size_frac, list(color), font_path],
+                   sort_keys=True, default=str).encode()).hexdigest()[:12]
+    out = d / f"captions-{index:02d}-{key}.mov"
     if out.exists():
         return out
     if not chunks or not font_path:
@@ -1649,8 +1655,15 @@ def background_bed(clip_audio, d, index, model):
 
 
 def mix(bed, voice, d, index, bg_gain):
-    """Narration on top, the music and effects ducked underneath it."""
-    out = d / f"audio-{index:02d}.m4a"
+    """Narration on top, the music and effects ducked underneath it.
+
+    Named after the voice and bed it was made from, for the same reason the
+    captions are: keyed on the reel number alone, a rewritten script played the
+    previous script's audio.
+    """
+    key = hashlib.sha1(
+        f"{voice}|{bed}|{bg_gain}".encode()).hexdigest()[:12]
+    out = d / f"audio-{index:02d}-{key}.m4a"
     if out.exists():
         return out
     if bed is None:
@@ -1921,6 +1934,34 @@ def prepare(target, a, progress=None, with_scripts=True, need_video=True):
             told.append(text)
     step(1.0, "Scripts ready")
     return ctx
+
+
+def dialogue_for(lines, span, limit=20000):
+    """The film's own dialogue for this part, timestamped.
+
+    Shown beside the script so you can see what the narration was made from,
+    and judge whether it is a fair account of it.
+    """
+    rows = []
+    for ln in lines_in(lines, span):
+        text = clean_line(ln["text"])
+        if text:
+            rows.append(f"[{hhmmss(ln['start'])}]  {text}")
+    joined = "\n".join(rows)
+    if len(joined) > limit:
+        joined = joined[:limit] + "\n... (trimmed)"
+    return joined or "(no dialogue in this stretch)"
+
+
+def delete_reel(out_dir, index):
+    """Throw away one finished reel, leaving its script alone."""
+    gone = []
+    for suffix in (".mp4", ".srt"):
+        path = Path(out_dir) / f"reel-{index:02d}{suffix}"
+        if path.exists():
+            path.unlink()
+            gone.append(path.name)
+    return gone
 
 
 def write_script(scripts_dir, index, title, text):

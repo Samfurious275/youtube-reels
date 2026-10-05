@@ -84,7 +84,7 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     spans, scripts = ctx["spans"], ctx["scripts"]
 
     titles = ctx.get("titles") or [None] * len(spans)
-    rows, boxes = [], []
+    rows, boxes, talk, state = [], [], [], []
     for i in range(MAX_REELS):
         if i < len(spans):
             s, t = spans[i], titles[i]
@@ -95,9 +95,16 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
             boxes.append(gr.update(
                 value=scripts[i],
                 label=f"Reel {i + 1}" + (f" · {t}" if t else "") + f"  ({where})"))
+            talk.append(gr.update(value=reels.dialogue_for(ctx["lines"], s)))
+            made = Path(ctx["out_dir"]) / f"reel-{i + 1:02d}.mp4"
+            state.append(gr.update(
+                value=f"*Already made: {made.name}*" if made.exists()
+                else "*Not made yet.*"))
         else:
             rows.append(gr.update(visible=False))
             boxes.append(gr.update(value=""))
+            talk.append(gr.update(value=""))
+            state.append(gr.update(value=""))
 
     empty = sum(1 for s in scripts if not s.strip())
     note = [f"**{len(spans)} parts.** Read the scripts below, change anything "
@@ -118,7 +125,8 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     note.append(f"\nScripts are also saved in `{ctx['scripts_dir']}`.")
 
     files = [str(p) for p in sorted(Path(ctx["scripts_dir"]).glob("reel-*.txt"))]
-    return [ctx, "\n".join(note), gr.update(visible=True), files] + rows + boxes
+    return ([ctx, "\n".join(note), gr.update(visible=True), files]
+            + rows + boxes + talk + state)
 
 
 FORM_LEN = 13          # how many inputs the settings form has, before the scripts
@@ -189,11 +197,27 @@ def rewrite_one(index):
 
 
 def render_one(index):
-    """Button handler that renders only reel `index`."""
+    """Button handler that makes, or remakes, only reel `index`."""
     def run(ctx, *args, progress=gr.Progress()):
         if not ctx or index >= len(ctx["spans"]):
             raise gr.Error("Press *Get the narration scripts* first.")
-        return render(ctx, args[:FORM_LEN], args[FORM_LEN:], {index + 1}, progress)
+        video, files, summary = render(ctx, args[:FORM_LEN], args[FORM_LEN:],
+                                       {index + 1}, progress)
+        return video, files, summary, f"*Made reel {index + 1}.*"
+    return run
+
+
+def delete_one(index):
+    """Button handler that throws away reel `index`, keeping its script."""
+    def run(ctx):
+        if not ctx:
+            raise gr.Error("Press *Get the narration scripts* first.")
+        gone = reels.delete_reel(ctx["out_dir"], index + 1)
+        left = [str(f) for f in sorted(Path(ctx["out_dir"]).rglob("*")) if f.is_file()]
+        if not gone:
+            return left, "*Nothing to delete — that reel has not been made.*"
+        return left, (f"*Deleted {', '.join(gone)}. The script is still here, so "
+                      f"you can make it again.*")
     return run
 
 
@@ -272,17 +296,29 @@ def build_ui():
 
             with gr.Column(scale=1):
                 notes = gr.Markdown()
-                rows, boxes, redo_btns, one_btns = [], [], [], []
+                rows, boxes, talk, state = [], [], [], []
+                redo_btns, one_btns, del_btns = [], [], []
                 for i in range(MAX_REELS):
                     with gr.Group(visible=False) as row:
                         boxes.append(gr.Textbox(label=f"Reel {i + 1}", lines=6,
                                                 interactive=True))
+                        with gr.Accordion("The film's own dialogue for this part",
+                                          open=False):
+                            talk.append(gr.Textbox(
+                                show_label=False, lines=12, interactive=False,
+                                info="What the narration was written from. Read "
+                                     "it to judge whether the script is a fair "
+                                     "account, and paste from it if you rewrite "
+                                     "by hand"))
                         with gr.Row():
-                            redo_btns.append(gr.Button("↻ Rewrite this script",
+                            redo_btns.append(gr.Button("↻ Rewrite script",
                                                        size="sm"))
-                            one_btns.append(gr.Button("Make just this reel",
+                            one_btns.append(gr.Button("Make / remake this reel",
                                                       size="sm",
-                                                      variant="secondary"))
+                                                      variant="primary"))
+                            del_btns.append(gr.Button("Delete this reel",
+                                                      size="sm", variant="stop"))
+                        state.append(gr.Markdown())
                     rows.append(row)
 
                 script_files = gr.Files(label="The scripts, as .txt files")
@@ -297,7 +333,8 @@ def build_ui():
         assert len(form) == FORM_LEN
 
         step1.click(get_scripts, inputs=form,
-                    outputs=[job, notes, step2, script_files] + rows + boxes)
+                    outputs=[job, notes, step2, script_files]
+                            + rows + boxes + talk + state)
         step2.click(make_reels, inputs=[job] + form + boxes,
                     outputs=[preview, out_files, summary])
 
@@ -305,7 +342,9 @@ def build_ui():
             redo_btns[i].click(rewrite_one(i), inputs=[job] + form,
                                outputs=[boxes[i], notes])
             one_btns[i].click(render_one(i), inputs=[job] + form + boxes,
-                              outputs=[preview, out_files, summary])
+                              outputs=[preview, out_files, summary, state[i]])
+            del_btns[i].click(delete_one(i), inputs=[job],
+                              outputs=[out_files, state[i]])
     return demo
 
 
