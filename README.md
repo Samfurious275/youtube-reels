@@ -78,9 +78,11 @@ Each part is written knowing what the previous one already said, so Part 2 picks
 up where Part 1 stopped instead of re-introducing everyone. Each also gets a
 chapter title, kept in its script file and in `manifest.json`.
 
-> **Use a local model for this.** Continuity and titles come from
-> `--script ollama`. Without it you get a chronological digest of the dialogue
-> instead of written narration. See **[NARRATION.md](NARRATION.md)**.
+> **A local model does the writing.** It is used automatically when one is
+> running. Without one, the script is picked out of the transcript instead, and
+> on a film that reads as the characters talking rather than as narration — so
+> install [Ollama](https://ollama.com) and `ollama pull llama3.2`. See
+> **[NARRATION.md](NARRATION.md)**.
 
 Want the old behaviour — separate best moments that do not connect?
 
@@ -209,8 +211,8 @@ echo "Write in the past tense. Two sentences per beat. Dry and understated." > m
 ./run.sh "URL" --style-file my-style.txt
 ```
 
-> Style only applies with `--script ollama`. The extractive default picks
-> sentences out of the transcript and cannot rewrite them into another tense.
+> Style only applies when a local model is doing the writing. Picking
+> sentences out of the transcript cannot rewrite them into another tense.
 
 ### Other things you will want
 
@@ -585,7 +587,7 @@ picture is scaled up to 1080 wide.
 | `--gap 180` | minimum seconds between two picks, so they spread across the film |
 | `--style punchy \| cinematic` | how the narration is written (default `punchy`) |
 | `--style-file FILE` | your own writing instructions, instead of `--style` |
-| `--script ollama` | real narration from a local model instead of extractive |
+| `--script auto` | default: use a local model when one is running, else pick lines from the transcript |
 | `--model llama3.2` | which Ollama model to use |
 | `--voice` / `--rate` | which neural voice, and how fast it speaks |
 | `--list-voices` | print every available voice |

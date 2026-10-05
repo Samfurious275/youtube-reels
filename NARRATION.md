@@ -34,9 +34,9 @@ Idris takes her to the boat yard and pulls back the cover...
 for any notes you want to leave yourself. Everything else in the file is read
 aloud.
 
-Continuity and the titles both come from the local model — with the extractive
-default you get a chronological digest of each chapter instead, and plain
-`Part 1`, `Part 2` titles. This is the mode where `--script ollama` matters most.
+Continuity and the titles both come from the local model, which is used
+automatically when one is running. Without one you get a digest of each
+chapter's dialogue instead, and plain `Part 1`, `Part 2` titles.
 
 For separate, unconnected highlights instead, use `--highlights`.
 
@@ -185,8 +185,8 @@ echo "Past tense. Dry and understated. Never more than one clause." > my-style.t
 
 Two things worth knowing:
 
-- **Style only applies with `--script ollama`.** The extractive default selects
-  sentences from the transcript; it cannot rewrite them into another tense.
+- **Style only applies when a local model writes the script.** Selecting
+  sentences from the transcript cannot rewrite them into another tense.
 - **Bigger models follow it more closely.** On `llama3.2` (3B) most parts come
   back in the right tense and the occasional one drifts into the present. If a
   part comes out wrong, the quickest fix is to edit that one script by hand —

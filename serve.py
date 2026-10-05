@@ -57,7 +57,7 @@ def settings(count, seconds, voice, fit_label, burn, cover, keep_music, use_olla
     a.no_burn = not burn
     a.cover_captions = bool(cover)
     a.no_bg = not keep_music
-    a.script = "ollama" if use_ollama else "extractive"
+    a.script = "auto" if use_ollama else "extractive"
     a.highlights = not story
     a.style = STYLE_BY_LABEL.get(style, reels.DEFAULT_STYLE)
     return a
@@ -102,6 +102,12 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
         note.append(f"\n**{empty}** of them came out empty, because that stretch "
                     f"had no speech to work from. Write those yourself, or they "
                     f"will be skipped.")
+    if a.script != "extractive" and not reels.ollama_up(a.ollama_host):
+        note.append("\n⚠️ **No local model is answering**, so these were picked "
+                    "out of the transcript rather than written — on a film that "
+                    "reads as the characters talking, not as narration. Install "
+                    "[Ollama](https://ollama.com), run `ollama pull llama3.2`, "
+                    "then press the button again.")
     if ctx["video"] is None:
         note.append("\nOnly the transcript has been downloaded so far — the "
                     "video itself is fetched when you press *Make the reels*.")
@@ -195,10 +201,12 @@ def build_ui():
                     list(STYLE_LABELS), value=DEFAULT_STYLE_LABEL,
                     label="How the narration is written")
                 use_ollama = gr.Checkbox(
-                    value=False, label="Write the narration with a local Ollama model",
-                    info="Much better writing, and what the style setting acts "
-                         "on. Needs Ollama running; falls back on its own if "
-                         "it is not there")
+                    value=True,
+                    label="Write the narration with a local model (recommended)",
+                    info="Untick only to skip it entirely. Without a model the "
+                         "script is picked out of the transcript, which on a "
+                         "film reads as the characters talking rather than as "
+                         "narration")
 
                 gr.Markdown("### 2. How it should look and sound")
                 voice = gr.Dropdown(reels.SUGGESTED_VOICES,

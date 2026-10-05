@@ -968,6 +968,45 @@ def split_script(raw):
     return title, " ".join(" ".join(body).split())
 
 
+_OLLAMA_SEEN = {}
+
+
+def ollama_up(host):
+    """Whether a local Ollama is answering, cached for the run.
+
+    Checked so the default can simply use it when it is there. Without a model
+    the only other option selects sentences out of the transcript, and a film's
+    transcript is dialogue -- so the "narration" comes out as characters talking
+    in the first person, which is not narration at all.
+    """
+    import urllib.error
+    import urllib.request
+
+    if host in _OLLAMA_SEEN:
+        return _OLLAMA_SEEN[host]
+    try:
+        with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=3) as r:
+            up = r.status == 200
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        up = False
+    _OLLAMA_SEEN[host] = up
+    return up
+
+
+# Pronouns that mark a line as somebody speaking rather than somebody narrating.
+SPEAKER_WORDS = {"i", "im", "ill", "ive", "id", "me", "my", "mine", "myself",
+                 "we", "us", "our", "ours", "ourselves",
+                 "you", "your", "yours", "youre", "youll", "youve", "yourself"}
+
+
+def speaker_ratio(text):
+    """How much of a line is first or second person, 0 to 1."""
+    toks = re.findall(r"[a-z']+", text.lower())
+    if not toks:
+        return 0.0
+    return sum(1 for t in toks if t.replace("'", "") in SPEAKER_WORDS) / len(toks)
+
+
 def extractive_script(lines, span, target_words):
     """A narration built from the most representative lines of the stretch.
 
@@ -981,6 +1020,14 @@ def extractive_script(lines, span, target_words):
     chosen = [c for c in chosen if len(c.split()) >= 3]
     if not chosen:
         return ""
+
+    # Lines thick with "I" and "you" are characters talking, and strung together
+    # they read as dialogue rather than as anyone describing events. Prefer the
+    # rest -- unless that leaves too little to work with, in which case a poor
+    # script beats none.
+    narrated = [c for c in chosen if speaker_ratio(c) < 0.12]
+    if len(narrated) >= 3:
+        chosen = narrated
 
     words = [w for c in chosen for w in re.findall(r"[a-z']+", c.lower())]
     freq = Counter(w for w in words if w not in STOPWORDS)
@@ -1163,6 +1210,32 @@ def parse_narration(raw):
     return title, re.sub(r"\s+", " ", text)
 
 
+_WARNED_EXTRACTIVE = False
+
+
+def resolve_script(a):
+    """Which script writer to use, settling "auto" against a live Ollama.
+
+    Said out loud when it falls back, because the difference is not subtle: a
+    model writes narration, while the alternative picks lines out of the
+    transcript, and a film's transcript is people talking.
+    """
+    global _WARNED_EXTRACTIVE
+
+    mode = getattr(a, "script", "auto")
+    if mode != "auto":
+        return mode
+    if ollama_up(getattr(a, "ollama_host", "http://127.0.0.1:11434")):
+        return "ollama"
+    if not _WARNED_EXTRACTIVE:
+        _WARNED_EXTRACTIVE = True
+        print("  ! No local model is answering, so the scripts will be picked "
+              "out of the\n    transcript rather than written. On a film that "
+              "reads as characters talking,\n    not as narration. Install "
+              "https://ollama.com and run:  ollama pull llama3.2")
+    return "extractive"
+
+
 def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None,
                   is_last=False):
     """One reel's script, as an editable text file beside the finished reels.
@@ -1183,7 +1256,7 @@ def narration_for(lines, span, seconds, a, index, scripts_dir, previous=None,
     target = int(seconds * WORDS_PER_SECOND)
     chapter = span.get("chapter")
     title, text = None, None
-    if a.script == "ollama":
+    if resolve_script(a) == "ollama":
         got = ollama_script(lines, span, target, a.model, a.ollama_host,
                             chapter=chapter, previous=previous,
                             style=style_for(a), is_last=is_last)
@@ -1996,8 +2069,11 @@ def build_parser():
     p.add_argument("--skip-end", type=float, default=0.06,
                    help="fraction to ignore at the tail, for credits (default 0.06)")
 
-    p.add_argument("--script", choices=["extractive", "ollama"], default="extractive",
-                   help="how to write the narration (default extractive, no download)")
+    p.add_argument("--script", choices=["auto", "extractive", "ollama"],
+                   default="auto",
+                   help="how to write the narration: auto uses a local Ollama "
+                        "model when one is running and falls back to picking "
+                        "lines out of the transcript when none is")
     p.add_argument("--style", choices=sorted(STYLES), default=DEFAULT_STYLE,
                    help="how the narration is written: "
                         + "; ".join(f"{k} = {v['label']}"
