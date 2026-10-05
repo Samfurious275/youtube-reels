@@ -18,6 +18,7 @@ this machine.
 """
 
 import argparse
+import socket
 import traceback
 from pathlib import Path
 
@@ -237,6 +238,27 @@ def build_ui():
     return demo
 
 
+def free_port(host, start, tries=20):
+    """The first port free at or above `start`.
+
+    Gradio is told one exact port and gives up if it is taken, which is easy to
+    hit: a previous run suspended with Ctrl+Z instead of Ctrl+C still holds it,
+    and the error that comes back talks about environment variables rather than
+    saying something is already running. Finding the next free one is friendlier
+    than failing.
+    """
+    bind = "" if host == "0.0.0.0" else host
+    for port in range(start, start + tries):
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((bind, port))
+                return port
+            except OSError:
+                continue
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Serve the reel maker as a web page on this machine.",
@@ -255,12 +277,21 @@ def main():
 
     host = "0.0.0.0" if a.lan else a.host
 
+    port = free_port(host, a.port)
+    if port is None:
+        print(f"\n  Ports {a.port}-{a.port + 19} are all in use. Close whatever "
+              f"is using them, or pass --port with a free one.\n")
+        return
+    if port != a.port:
+        print(f"\n  ! Port {a.port} is already in use -- most likely another copy "
+              f"of this page.\n    Using {port} instead.")
+
     if a.share and not a.password:
         print("  ! --share puts this on the public internet with no password.\n"
               "    Anyone with the link can queue jobs on your machine.\n"
               "    Add --password to lock it.\n")
 
-    print(f"\n  Starting the reel maker on http://{host}:{a.port}")
+    print(f"\n  Starting the reel maker on http://{host}:{port}")
     if a.password:
         # The username is easy to miss, and the login just says "Incorrect
         # Credentials" when it is wrong, so spell both out here.
@@ -274,7 +305,7 @@ def main():
     demo = build_ui().queue(max_size=8)
 
     try:
-        demo.launch(server_name=host, server_port=a.port, share=a.share,
+        demo.launch(server_name=host, server_port=port, share=a.share,
                     auth=auth, inbrowser=True)
     except Exception as e:
         if not a.share:
@@ -292,11 +323,11 @@ def main():
         print("            ./hf-space/deploy.sh your-name/your-space\n")
         print("      * Share it on your own network only, no helper needed:")
         print("            serve.bat --lan")
-        print("        then open http://<your-ip>:%d from the other device\n" % a.port)
+        print("        then open http://<your-ip>:%d from the other device\n" % port)
         print("      * Or allow the blocked file in Windows Security ->")
         print("        Protection history, then try --share again.\n")
         print("    Starting without the public link.\n")
-        demo.launch(server_name=host, server_port=a.port, share=False,
+        demo.launch(server_name=host, server_port=port, share=False,
                     auth=auth, inbrowser=True)
 
 

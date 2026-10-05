@@ -640,6 +640,19 @@ Put the link in double quotes: `"https://..."`.
 [the section above](#if---share-does-not-work-on-windows) — use a Hugging Face
 Space or `serve.bat --lan`.
 
+**"Cannot find empty port" when starting the web page.**
+Something is already listening on it — usually an earlier copy of the page. It
+now steps to the next free port by itself and tells you, so you should not see
+this again. If you want the old one gone:
+
+```bash
+lsof -nP -iTCP:7861 -sTCP:LISTEN   # macOS / Linux: shows the PID
+kill <that PID>
+```
+
+A common cause is stopping the page with **Ctrl+Z instead of Ctrl+C**. Ctrl+Z
+only suspends it, so it keeps the port and its memory. Use Ctrl+C.
+
 **It is filling up my disk.** Run `--clean`, and consider the
 [small install](#if-disk-space-is-tight).
 
