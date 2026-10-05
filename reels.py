@@ -742,7 +742,7 @@ def best_windows(score, seconds, total, count, target, gap, snap=None):
 SCENE_PTS = re.compile(r"pts_time:([0-9.]+)")
 
 
-def snap_to_cut(video, t, d, window=5.0, threshold=0.3):
+def snap_to_cut(video, t, d, window=5.0, threshold=0.3, prefer=None):
     """Move a start time to the nearest shot change within a few seconds.
 
     Opening a reel two seconds into a shot looks like a mistake; opening on the
@@ -759,6 +759,11 @@ def snap_to_cut(video, t, d, window=5.0, threshold=0.3):
     cuts = [lo + float(m) for m in SCENE_PTS.findall(out.stdout)]
     if not cuts:
         return t
+    if prefer == "before":
+        # Only ever move earlier. Snapping forward would start the clip after
+        # the line it was placed to catch, which is the whole point of it.
+        earlier = [c for c in cuts if c <= t]
+        return max(earlier) if earlier else t
     best = min(cuts, key=lambda c: abs(c - t))
     return best if abs(best - t) <= window else t
 
@@ -1930,14 +1935,43 @@ def regenerate_script(ctx, a, index):
                          is_last=(index == len(ctx["spans"])))
 
 
-def montage_starts(score, c0, c1, count, clip_len):
-    """Where each short clip of a montage should begin.
+def montage_starts(lines, score, c0, c1, count, clip_len):
+    """Where each clip of a montage should begin.
 
-    Spread evenly across the chapter so the picture travels through the story at
-    roughly the pace the narration does, then nudged within its own slice to the
-    liveliest moment there, so no clip opens on a held shot of nothing.
+    Anchored on the dialogue the narration was written from, not on whatever is
+    loudest. The narration is those lines retold, so the picture belongs with
+    them: the first clip opens on the first line the part covers, the last one
+    closes on its last line, and the clips between follow the conversation in
+    order. Choosing by loudness instead is what left the voice describing a
+    scene that was nowhere on screen.
+
+    Falls back to spreading evenly on score alone for a stretch with no speech
+    in it, which has no dialogue to follow.
     """
     import numpy as np
+
+    spoken = [ln for ln in lines if ln["end"] > c0 and ln["start"] < c1]
+
+    if len(spoken) >= 2:
+        first = max(c0, spoken[0]["start"])
+        last = min(c1, spoken[-1]["end"])
+        starts = []
+        for i in range(count):
+            # Walk the lines themselves, so the clips keep pace with the talking
+            # rather than with the clock.
+            j = round(i * (len(spoken) - 1) / max(count - 1, 1))
+            starts.append(float(spoken[int(j)]["start"]))
+        starts[0] = float(first)
+        if last - first > clip_len:
+            starts[-1] = float(last - clip_len)
+        # Keep them in order and inside the chapter.
+        limit = max(c0, c1 - clip_len)
+        out, previous = [], c0 - 1
+        for t in starts:
+            t = min(max(t, c0), limit)
+            out.append(float(max(t, previous)))
+            previous = out[-1]
+        return out
 
     starts = []
     slice_len = max((c1 - c0) / max(count, 1), 1.0)
@@ -2080,9 +2114,10 @@ def build(ctx, a, progress=None, only=None):
             clip_len = dur / pieces
             step(base + span_frac * 0.22,
                  f"Reel {i} of {len(spans)}: cutting {pieces} clips together")
-            starts = montage_starts(mscore, span["narr_start"], span["narr_end"],
-                                    pieces, clip_len)
-            starts = [snap_to_cut(video, t, d, window=2.5) for t in starts]
+            starts = montage_starts(lines, mscore, span["narr_start"],
+                                    span["narr_end"], pieces, clip_len)
+            starts = [snap_to_cut(video, t, d, window=2.0, prefer="before")
+                      for t in starts]
             print(f"    footage: {pieces} clips of {clip_len:.1f}s from across "
                   f"{hhmmss(span['narr_start'])}-{hhmmss(span['narr_end'])}")
             src_video = build_montage(video, starts, clip_len,
