@@ -173,15 +173,18 @@ that appear, then press *Make the reels*.
 
 | Style | Reads like |
 | --- | --- |
-| `punchy` *(default)* | Past tense. One idea per sentence, about fourteen words at most, so each line lands as its own beat. Plot in every sentence — no atmosphere, no description. Speech reported, never quoted. The last part ends with a question to the viewer. |
-| `cinematic` | Present tense, longer sentences, steadier. |
-| `fish` | Explainer. A short intro, one long story through the middle, a short call to action. |
-| `better-world` | Explainer. The problem as the viewer lives it now, a turning point, then the same world afterwards. |
-| `usp` | Explainer. No story — what the thing does, one capability per sentence. |
+| `punchy` *(default)* | Fast recap. One idea per sentence, about ten words, plot in every line. Ends with a question to the viewer. |
+| `action` | Escalating action beats, each bigger than the last. Concrete and physical — the weapon, the number, the count of men left. |
+| `reveal` | Someone badly underestimated. The first half is how little they are thought of; then the truth, then the reaction. |
+| `twist` | Opens on the strangest fact in the film, stated flatly, then goes back and earns it. The last sentence answers the first. |
+| `cinematic` | Steadier, present tense, longer sentences. |
 
-The three explainer shapes are for a product, service or training video rather
-than a film, and usually want one script for the whole thing: pair them with
-`--reels 1`.
+All of them are past tense and third person except `cinematic`, with sentences of
+about ten words — which is how this kind of short actually reads.
+
+**A style that pushes a shape will invent to fill it.** `action` in particular
+wants every beat bigger than the last, so on a stretch where little happens it
+supplies the escalation itself. Always read the scripts before rendering.
 
 **Styles are files, in `styles/`.** One `.txt` each: a few `key: value` lines, a
 blank line, then the writing rules. Drop a new file in and it appears in

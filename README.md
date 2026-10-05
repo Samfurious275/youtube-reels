@@ -196,26 +196,27 @@ written beside it — the picture is just left clean.
 
 ```bash
 ./run.sh "URL" --style punchy         # the default
-./run.sh "URL" --style fish
+./run.sh "URL" --style reveal
 ```
 
 Styles live in the **`styles/`** folder, one plain text file each. They ship
-with five:
+with five, all for film:
 
 | Style | What it writes |
 | --- | --- |
-| `punchy` *(default)* | Fast story recap. Past tense, one beat per sentence, a question to the viewer at the end. |
+| `punchy` *(default)* | Fast recap. Past tense, one beat per sentence, a question to the viewer at the end. |
+| `action` | Escalating action. Each beat bigger than the last, concrete and physical, ending on the biggest moment. |
+| `reveal` | Someone underestimated turns out to be extraordinary. Spends the first half on how they are dismissed, withholds the truth, then pays it off. |
+| `twist` | Cold open on the strangest moment, then goes back and explains it, so the last line answers the first. |
 | `cinematic` | Steadier retelling. Present tense, longer sentences. |
-| `fish` | Explainer: a short intro, one long story in the middle, a short call to action. |
-| `better-world` | Explainer: the problem as it is now, a turning point, then the same world afterwards, and a call to action. |
-| `usp` | Explainer: no story at all — straight down what the thing does, one capability per sentence. |
 
-The three explainer shapes suit a product, a service or a training video. Those
-usually want **one script for the whole video**, so pair them with `--reels 1`:
+All five were written against how this kind of short actually reads: past tense,
+third person, and sentences of about ten words.
 
-```bash
-./run.sh "URL" --style better-world --reels 1 --duration 90
-```
+> **Styles that push a shape will invent to fill it.** `action` wants each beat
+> bigger than the last, so where the transcript is thin it will supply the
+> escalation itself. Read the scripts before rendering — that is what
+> `--scripts` and the rewrite button are for.
 
 **Add your own by dropping a file in `styles/`.** It appears in `--style` and in
 the web page's dropdown straight away — no code change. Copy an existing one to

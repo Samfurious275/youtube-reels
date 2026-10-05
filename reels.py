@@ -368,6 +368,9 @@ def caption_files(d):
 SUB_LANGS = "en,en-US,en-GB,en-orig"
 
 
+CAPTION_TROUBLE = {}
+
+
 def download_captions(target, d):
     """Fetch the transcript on its own, and never let it sink the run.
 
@@ -384,7 +387,12 @@ def download_captions(target, d):
     print("  $ yt-dlp --skip-download --write-auto-subs ...")
     done = subprocess.run(cmd, capture_output=True, text=True)
     if not caption_files(d):
-        why = (done.stderr or done.stdout or "").strip().splitlines()
+        blurb = (done.stderr or "") + (done.stdout or "")
+        why = blurb.strip().splitlines()
+        # A rate limit is not the same as a video with no captions, and the
+        # difference decides whether waiting ten minutes fixes it.
+        CAPTION_TROUBLE[str(d)] = ("rate-limited" if "429" in blurb
+                                   else (why[-1] if why else "unknown"))
         print(f"  no caption file came back"
               f"{': ' + why[-1] if why else ''}")
 
@@ -1805,8 +1813,17 @@ def prepare(target, a, progress=None, with_scripts=True, need_video=True):
     step(0.30, "Reading the transcript")
     source_for_speech = video
     if source_for_speech is None and not caption_files(d):
-        print("  no captions published for this video -- fetching the audio "
-              "so it can be transcribed")
+        trouble = CAPTION_TROUBLE.get(str(d), "")
+        if trouble == "rate-limited":
+            print("  ! YouTube rate-limited the caption request (HTTP 429).\n"
+                  "    That is temporary and says nothing about this video --\n"
+                  "    waiting ten minutes and running again usually fixes it.")
+        else:
+            print("  ! No captions came back for this video.")
+        print("    Falling back to transcribing it here, which means\n"
+              "    downloading the audio (often a few hundred MB) and running\n"
+              "    Whisper over it. On a feature-length video that is slow.\n"
+              "    Ctrl+C now if you would rather wait and retry.")
         source_for_speech = download_audio(url, d)
     lines = transcript(source_for_speech, d, a.whisper_model)
 

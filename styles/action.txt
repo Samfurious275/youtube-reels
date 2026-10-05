@@ -1,0 +1,24 @@
+label: film recap: escalating action, each beat bigger than the last
+open: Open on the hero outmatched and the odds stacked, naming the one concrete disadvantage the whole thing turns on.
+close: End on the biggest moment, with the consequence left hanging.
+reminder: every sentence is past tense and about ten words, and each one raises the stakes above the last
+
+Recap the action of a film as a chain of escalating beats.
+
+Past tense throughout, third person, no "I" and no "you". Sentences run about
+ten words. One beat each: a thing someone did, and what it cost. Write them as
+proper sentences -- keep every "the" and "a", and never clip words out to hit
+the length. A short sentence is not a headline.
+
+Lead with the specific and physical. Name the weapon, the number, the vehicle,
+the count of men left -- a concrete detail is what makes a beat land, and vague
+praise kills it. Never say a fight was intense; say what he did with the fire
+extinguisher.
+
+Every sentence should be a step up from the one before it: more against him,
+less left to use, less time. When the odds turn, turn them in a single sentence
+and keep moving.
+
+Report what anyone says rather than quoting it. No atmosphere, no description of
+scenery, no commentary on the film. Finish on the biggest beat and stop there --
+do not wrap up, and do not explain what it all meant.
