@@ -78,13 +78,20 @@ Each part is written knowing what the previous one already said, so Part 2 picks
 up where Part 1 stopped instead of re-introducing everyone. Each also gets a
 chapter title, kept in its script file and in `manifest.json`.
 
-**The picture follows the dialogue being narrated.** A part narrates its whole
+**The picture follows what the voice is saying.** A part narrates its whole
 chapter — often half an hour of story — so one continuous minute of footage
 would leave the voice describing events that are nowhere on screen. Instead each
-reel is cut from a dozen or so short clips, each anchored on the dialogue the
-narration was written from: the first opens on the first line the part covers,
-the last closes on its final line, and the ones between follow the conversation
-in order.
+reel is cut from a dozen or so short clips, and each clip is matched to the
+stretch of dialogue the narration is retelling at that moment, by comparing the
+words being spoken against the transcript. Each clip is chosen from its own
+share of the chapter, so the picture advances in step with the story instead of
+piling into one scene. The run prints how it did:
+
+```
+footage: 12 clips of 7.9s, 12/12 matched to what the voice is saying
+```
+
+A clip that matches nothing recognisable falls back to its proportional place.
 
 ```
 footage: 12 clips of 8.1s from across 0:37:37-1:12:56

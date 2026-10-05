@@ -1098,6 +1098,33 @@ uh um going get got know really right now one see said says come came go went ab
 """.split())
 
 
+EXCERPT_LIMIT = 16000
+
+
+def chapter_excerpt(lines, span, limit=EXCERPT_LIMIT):
+    """The dialogue of this part, thinned evenly when it will not fit.
+
+    A chapter of a feature runs to twenty-odd thousand characters. Cutting that
+    down to the first few thousand shows the model the opening and then asks it
+    to narrate the whole thing, so it invents the rest -- which is exactly what
+    it did, and invented narration cannot be matched to any footage, because
+    none of it happens in the film.
+
+    Dropping every nth line instead keeps the sample spanning the chapter end to
+    end, so what comes back describes the part it is supposed to.
+    """
+    texts = [clean_line(ln["text"]) for ln in lines_in(lines, span)]
+    texts = [t for t in texts if t]
+    if not texts:
+        return ""
+    joined = re.sub(r"\s+", " ", " ".join(texts)).strip()
+    if len(joined) <= limit:
+        return joined
+    keep = max(2, round(len(joined) / limit) + 1)
+    thinned = re.sub(r"\s+", " ", " ".join(texts[::keep])).strip()
+    return thinned[:limit]
+
+
 def ollama_script(lines, span, target_words, model, host, chapter=None,
                   previous=None, style=None, is_last=False):
     """Ask a local Ollama model for real narration. Free, offline, no key.
@@ -1108,8 +1135,7 @@ def ollama_script(lines, span, target_words, model, host, chapter=None,
     import urllib.error
     import urllib.request
 
-    excerpt = " ".join(clean_line(ln["text"]) for ln in lines_in(lines, span))
-    excerpt = re.sub(r"\s+", " ", excerpt).strip()[:6000]
+    excerpt = chapter_excerpt(lines, span)
     if len(excerpt.split()) < 12:
         return None
 
@@ -1935,6 +1961,81 @@ def regenerate_script(ctx, a, index):
                          is_last=(index == len(ctx["spans"])))
 
 
+def content_words(text):
+    """The words worth matching on: no stopwords, no two-letter scraps."""
+    return {w for w in re.findall(r"[a-z']+", (text or "").lower())
+            if len(w) >= 3 and w not in STOPWORDS}
+
+
+def align_clips(words, lines, c0, c1, pieces, clip_len, reel_dur):
+    """Match each clip to the dialogue the voice is retelling at that moment.
+
+    The narration is the chapter's dialogue rewritten, so the two still share
+    their names and their nouns. Splitting the spoken narration by its own word
+    timings gives what is being said during each clip; the clip then shows
+    whichever run of transcript lines shares the most of that vocabulary.
+
+    Matching only ever moves forward through the transcript, because a recap
+    tells the story in order -- which also settles it when a name comes up in
+    two places. Returns (starts, how many pieces matched on real overlap).
+    """
+    spoken = [ln for ln in lines if ln["end"] > c0 and ln["start"] < c1]
+    if len(spoken) < 2 or not words:
+        return None, 0
+
+    import math
+
+    sets = [content_words(clean_line(ln["text"])) for ln in spoken]
+    # A clip is several seconds of story, which is usually several lines of
+    # talking, so compare against a run of them rather than one at a time.
+    window = max(2, int(len(spoken) / max(pieces, 1) / 2))
+
+    # A name shared between the narration and one stretch of dialogue means far
+    # more than a word that turns up all through the chapter, and names are also
+    # what survives the model's paraphrasing. So weight each word by how rare it
+    # is here, rather than counting every match the same.
+    seen_in = Counter(w for bag in sets for w in bag)
+    weight = {w: math.log(1 + len(sets) / (1 + n)) for w, n in seen_in.items()}
+
+    starts, matched = [], 0
+    n = len(spoken)
+    for i in range(pieces):
+        t0 = i * reel_dur / pieces
+        t1 = (i + 1) * reel_dur / pieces
+        want = content_words(" ".join(w["text"] for w in words
+                                      if t0 <= w["start"] < t1))
+
+        # Each clip is chosen from its own share of the chapter. Searching the
+        # whole of what is left instead lets good matches pile into one scene,
+        # which leaves most of the chapter unseen and repeats the same shot --
+        # worse to watch than plain even spacing, however well it matched.
+        band_lo = int(n * i / pieces)
+        band_hi = max(band_lo, int(n * (i + 1) / pieces) - 1)
+
+        best_j, best = band_lo, 0.0
+        if want:
+            for j in range(band_lo, band_hi + 1):
+                seen = set().union(*sets[j:j + window]) if sets[j:j + window] else set()
+                if not seen:
+                    continue
+                score = (sum(weight.get(w, 0.0) for w in want & seen)
+                         / (len(seen) ** 0.5 + 1.0))
+                if score > best:
+                    best, best_j = score, j
+        if best >= 0.12:
+            matched += 1
+
+        starts.append(float(spoken[best_j]["start"]))
+
+    limit = max(c0, c1 - clip_len)
+    out, previous = [], c0 - 1
+    for t in starts:
+        t = min(max(t, c0), limit)
+        out.append(float(max(t, previous)))
+        previous = out[-1]
+    return out, matched
+
+
 def montage_starts(lines, score, c0, c1, count, clip_len):
     """Where each clip of a montage should begin.
 
@@ -2114,12 +2215,16 @@ def build(ctx, a, progress=None, only=None):
             clip_len = dur / pieces
             step(base + span_frac * 0.22,
                  f"Reel {i} of {len(spans)}: cutting {pieces} clips together")
-            starts = montage_starts(lines, mscore, span["narr_start"],
-                                    span["narr_end"], pieces, clip_len)
+            starts, matched = align_clips(words, lines, span["narr_start"],
+                                          span["narr_end"], pieces, clip_len, dur)
+            if starts is None:
+                starts = montage_starts(lines, mscore, span["narr_start"],
+                                        span["narr_end"], pieces, clip_len)
+                matched = 0
             starts = [snap_to_cut(video, t, d, window=2.0, prefer="before")
                       for t in starts]
-            print(f"    footage: {pieces} clips of {clip_len:.1f}s from across "
-                  f"{hhmmss(span['narr_start'])}-{hhmmss(span['narr_end'])}")
+            print(f"    footage: {pieces} clips of {clip_len:.1f}s, "
+                  f"{matched}/{pieces} matched to what the voice is saying")
             src_video = build_montage(video, starts, clip_len,
                                       d / f"montage-{i:02d}.mp4")
             src_span = {"start": 0.0, "end": duration_of(src_video)}
