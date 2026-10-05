@@ -862,43 +862,63 @@ def detect_caption_band(video, d, samples=14):
 # ---------------------------------------------------------------- 4. script
 
 
-# How the narration is written. Only the wording of these changes between
-# styles -- the voice, the timings and the captions downstream are identical --
-# so another style is just another entry here.
-STYLES = {
+# How the narration is written. These are the fallbacks; styles/*.txt is the
+# real list, so a new way of writing is a text file rather than a code change.
+BUILTIN_STYLES = {
     "punchy": {
         "label": "fast story recap: past tense, one beat per sentence",
-        "rules": (
-            "Write in the past tense. Keep every sentence to a single idea and "
-            "to about fourteen words at most, so each one lands as its own "
-            "beat. Move the plot forward in every sentence: no scene-setting, "
-            "no atmosphere, and no describing how anything looks or feels "
-            "unless it changes what happens next. Report what people say "
-            "instead of quoting them. Use the characters' names. Every verb is "
-            "a past-tense one: walked, said, found, took -- never walks, says, "
-            "finds, takes."),
-        "open": ("Open with one striking thing the main character did, then "
-                 "turn it immediately -- something they did not know, or "
-                 "something that went wrong."),
+        "rules": ("Write in the past tense. Keep every sentence to a single idea "
+                  "and to about fourteen words at most. Move the plot forward in "
+                  "every sentence. Report what people say instead of quoting "
+                  "them. Use the characters' names."),
+        "open": ("Open with one striking thing the main character did, then turn "
+                 "it immediately."),
         "close": ("Finish with one short direct question to the viewer about "
                   "what they would have done."),
-        # Repeated last because a small model weights the end of a prompt most,
-        # and tense is the first thing it drifts on.
         "reminder": ("every single sentence is in the past tense, and no "
                      "sentence runs past about fourteen words"),
     },
-    "cinematic": {
-        "label": "steadier retelling: present tense, longer sentences",
-        "rules": (
-            "Retell what happens in the third person and the present tense, in "
-            "plain confident sentences. Use characters' names as the transcript "
-            "gives them. Keep sentences short. Do not quote dialogue and do not "
-            "address the viewer."),
-        "open": "Open with the situation and who it happens to.",
-        "close": "",
-        "reminder": "every sentence is in the present tense",
-    },
 }
+
+STYLES_DIR = ROOT / "styles"
+
+
+def _parse_style(text):
+    """One style file: "key: value" lines, a blank line, then the writing rules.
+
+    Deliberately not YAML or JSON. These are meant to be opened and reworded by
+    whoever is using them, and the lite install has no parser to spare.
+    """
+    head, _, body = text.partition("\n\n")
+    meta = {}
+    for line in head.splitlines():
+        if ":" in line and not line.startswith("#"):
+            key, _, value = line.partition(":")
+            meta[key.strip().lower()] = value.strip()
+    # Collapse each paragraph but keep the breaks: the shape of a structure --
+    # intro, story, call to action -- is carried by its paragraphs.
+    paras = [" ".join(part.split()) for part in body.split("\n\n") if part.strip()]
+    rules = "\n\n".join(paras)
+    if not rules:
+        raise ValueError("no writing rules after the blank line")
+    return {"label": meta.get("label", ""), "rules": rules,
+            "open": meta.get("open", ""), "close": meta.get("close", ""),
+            "reminder": meta.get("reminder", "")}
+
+
+def load_styles():
+    """Every style in styles/, falling back to the built-ins if it is missing."""
+    styles = {k: dict(v) for k, v in BUILTIN_STYLES.items()}
+    if STYLES_DIR.is_dir():
+        for path in sorted(STYLES_DIR.glob("*.txt")):
+            try:
+                styles[path.stem] = _parse_style(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                print(f"  ignoring styles/{path.name}: {e}")
+    return styles
+
+
+STYLES = load_styles()
 
 DEFAULT_STYLE = "punchy"
 
@@ -1855,7 +1875,45 @@ def prepare(target, a, progress=None, with_scripts=True, need_video=True):
     return ctx
 
 
-def build(ctx, a, progress=None):
+def write_script(scripts_dir, index, title, text):
+    """Save one script, keeping its title as the leading # comment."""
+    Path(scripts_dir).mkdir(parents=True, exist_ok=True)
+    body = (text or "").strip()
+    head = f"# {title}\n\n" if title and body else ""
+    path = Path(scripts_dir) / f"reel-{index:02d}.txt"
+    path.write_text(head + body, encoding="utf-8")
+    return path
+
+
+def story_so_far(scripts_dir, index):
+    """The tail of the parts before this one, for continuity."""
+    told = []
+    for i in range(1, index):
+        path = Path(scripts_dir) / f"reel-{i:02d}.txt"
+        if path.exists():
+            _, text = split_script(path.read_text(encoding="utf-8"))
+            if text:
+                told.append(text)
+    return (" ".join(told)[-1500:]) if told else None
+
+
+def regenerate_script(ctx, a, index):
+    """Write one reel's script again, from scratch.
+
+    Deletes it first, because the generator reads an existing file back
+    verbatim -- that is what makes hand edits stick, and it would otherwise make
+    rewriting impossible.
+    """
+    scripts_dir = Path(ctx["scripts_dir"])
+    (scripts_dir / f"reel-{index:02d}.txt").unlink(missing_ok=True)
+    span = ctx["spans"][index - 1]
+    return narration_for(ctx["lines"], span, span["end"] - span["start"], a,
+                         index, scripts_dir,
+                         previous=story_so_far(scripts_dir, index),
+                         is_last=(index == len(ctx["spans"])))
+
+
+def build(ctx, a, progress=None, only=None):
     """Render the reels from an already-prepared job.
 
     The scripts are read off disk again rather than taken from ctx, so anything
@@ -1916,6 +1974,8 @@ def build(ctx, a, progress=None):
     made = []
 
     for i, span in enumerate(spans, 1):
+        if only and i not in only:
+            continue
         print(f"\nreel {i:02d} of {len(spans)}  "
               f"({hhmmss(span['start'])} - {hhmmss(span['end'])})")
         # The bar is split evenly between the reels, leaving a sliver at the
@@ -1989,7 +2049,7 @@ def build(ctx, a, progress=None):
     plural = "reel" if len(made) == 1 else "reels"
     step(1.0, f"Done: {len(made)} {plural}")
     print(f"\nDone: {len(made)} {plural} in {out_dir}")
-    skipped = len(spans) - len(made)
+    skipped = (len(only) if only else len(spans)) - len(made)
     if skipped:
         print(f"  {skipped} skipped for having an empty script -- write those in "
               f"{scripts_dir} and run again")

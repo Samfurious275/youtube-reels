@@ -175,8 +175,19 @@ that appear, then press *Make the reels*.
 | --- | --- |
 | `punchy` *(default)* | Past tense. One idea per sentence, about fourteen words at most, so each line lands as its own beat. Plot in every sentence — no atmosphere, no description. Speech reported, never quoted. The last part ends with a question to the viewer. |
 | `cinematic` | Present tense, longer sentences, steadier. |
+| `fish` | Explainer. A short intro, one long story through the middle, a short call to action. |
+| `better-world` | Explainer. The problem as the viewer lives it now, a turning point, then the same world afterwards. |
+| `usp` | Explainer. No story — what the thing does, one capability per sentence. |
 
-Writing your own is a text file of instructions:
+The three explainer shapes are for a product, service or training video rather
+than a film, and usually want one script for the whole thing: pair them with
+`--reels 1`.
+
+**Styles are files, in `styles/`.** One `.txt` each: a few `key: value` lines, a
+blank line, then the writing rules. Drop a new file in and it appears in
+`--style` and in the web page immediately. Copy an existing one to see the shape.
+
+For a one-off, skip the folder:
 
 ```bash
 echo "Past tense. Dry and understated. Never more than one clause." > my-style.txt

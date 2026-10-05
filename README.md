@@ -195,24 +195,40 @@ written beside it — the picture is just left clean.
 ### I want the narration written a particular way
 
 ```bash
-./run.sh "URL" --style punchy       # the default
-./run.sh "URL" --style cinematic
+./run.sh "URL" --style punchy         # the default
+./run.sh "URL" --style fish
 ```
 
-- **`punchy`** — past tense, one idea per sentence, nothing but plot, and a
-  question to the viewer at the end of the last part. The fast style used by
-  story-recap shorts.
-- **`cinematic`** — present tense, longer sentences, steadier.
+Styles live in the **`styles/`** folder, one plain text file each. They ship
+with five:
 
-Neither one fits? Write your own instructions in a text file and use that:
+| Style | What it writes |
+| --- | --- |
+| `punchy` *(default)* | Fast story recap. Past tense, one beat per sentence, a question to the viewer at the end. |
+| `cinematic` | Steadier retelling. Present tense, longer sentences. |
+| `fish` | Explainer: a short intro, one long story in the middle, a short call to action. |
+| `better-world` | Explainer: the problem as it is now, a turning point, then the same world afterwards, and a call to action. |
+| `usp` | Explainer: no story at all — straight down what the thing does, one capability per sentence. |
+
+The three explainer shapes suit a product, a service or a training video. Those
+usually want **one script for the whole video**, so pair them with `--reels 1`:
 
 ```bash
-echo "Write in the past tense. Two sentences per beat. Dry and understated." > my-style.txt
-./run.sh "URL" --style-file my-style.txt
+./run.sh "URL" --style better-world --reels 1 --duration 90
 ```
 
-> Style only applies when a local model is doing the writing. Picking
-> sentences out of the transcript cannot rewrite them into another tense.
+**Add your own by dropping a file in `styles/`.** It appears in `--style` and in
+the web page's dropdown straight away — no code change. Copy an existing one to
+see the shape: a few `key: value` lines, a blank line, then the writing rules.
+
+A one-off set of instructions can also be passed directly:
+
+```bash
+./run.sh "URL" --style-file my-notes.txt
+```
+
+> Style only applies when a local model is doing the writing. Picking sentences
+> out of the transcript cannot rewrite them into another shape.
 
 ### Other things you will want
 
@@ -417,8 +433,12 @@ the command line, and every option above is a checkbox or a slider:
 2. The scripts appear in **editable boxes**, one per reel, labelled with the
    chapter title and the part of the source they cover. **Read them. Change
    anything.** They can also be downloaded as `.txt` files from the box below.
-3. Press **Make the reels**. Only now is the video downloaded and the slow work
-   started.
+3. Each script has two buttons of its own:
+   - **↻ Rewrite this script** — writes that one again from scratch, leaving
+     every other script alone. Press it until you like what it says.
+   - **Make just this reel** — renders only that one, so a script you are still
+     unhappy with does not hold up the ones that are ready.
+4. **Make all the reels** does the lot. Only now is the video downloaded.
 
 You can change the voice, the framing, dialogue removal and the subtitle options
 *after* reading the scripts — they are only used in step 2.

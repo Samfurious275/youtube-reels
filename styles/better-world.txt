@@ -1,0 +1,24 @@
+label: explainer: life before, the turning point, life after
+open: Open on the problem as the viewer already lives it, in the present tense.
+close: End with one line telling the viewer where to go to get this.
+reminder: the problem comes first and in full, and nothing is named as the fix until the turn
+
+Write an explainer narration in two halves with a hinge between them.
+
+The first half is the world as it is now, and it is the half people skip. Spend
+real time on it. Name the specific frustrations, the wasted effort and the
+symptoms the viewer would recognise from their own week. Do not mention the
+solution at all. Finish this half on an open question.
+
+Then turn, in a single sentence, to what changes things.
+
+The second half is the same world afterwards. Lead with what is now better for
+the person -- what they feel, what they stop having to do, what they get back.
+Only once that has landed, give the concrete particulars: what it includes, how
+long it lasts, how much work it is to run. Answer the doubt a sceptical viewer
+would be holding by then, plainly and without arguing.
+
+Close with one line on where to go next.
+
+Third person except in the closing line. Plain sentences, no headings, no
+bullets.

@@ -82,18 +82,20 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     spans, scripts = ctx["spans"], ctx["scripts"]
 
     titles = ctx.get("titles") or [None] * len(spans)
-    boxes = []
+    rows, boxes = [], []
     for i in range(MAX_REELS):
         if i < len(spans):
             s, t = spans[i], titles[i]
             where = (f"narrates {reels.hhmmss(s['narr_start'])} – "
                      f"{reels.hhmmss(s['narr_end'])}" if "narr_start" in s
                      else f"{reels.hhmmss(s['start'])} – {reels.hhmmss(s['end'])}")
+            rows.append(gr.update(visible=True))
             boxes.append(gr.update(
-                visible=True, value=scripts[i],
+                value=scripts[i],
                 label=f"Reel {i + 1}" + (f" · {t}" if t else "") + f"  ({where})"))
         else:
-            boxes.append(gr.update(visible=False, value=""))
+            rows.append(gr.update(visible=False))
+            boxes.append(gr.update(value=""))
 
     empty = sum(1 for s in scripts if not s.strip())
     note = [f"**{len(spans)} parts.** Read the scripts below, change anything "
@@ -114,53 +116,83 @@ def get_scripts(url, upload, count, seconds, voice, fit_label, burn, cover,
     note.append(f"\nScripts are also saved in `{ctx['scripts_dir']}`.")
 
     files = [str(p) for p in sorted(Path(ctx["scripts_dir"]).glob("reel-*.txt"))]
-    return [ctx, "\n".join(note), gr.update(visible=True), files] + boxes
+    return [ctx, "\n".join(note), gr.update(visible=True), files] + rows + boxes
 
 
-def make_reels(ctx, url, upload, count, seconds, voice, fit_label, burn, cover,
-               keep_music, use_ollama, story, style, *scripts,
-               progress=gr.Progress()):
-    """Step two: save whatever is in the boxes, then render."""
-    if not ctx:
-        raise gr.Error("Press *Get the narration scripts* first.")
+FORM_LEN = 12          # how many inputs the settings form has, before the scripts
 
-    # Read the options again rather than reusing step one's: everything here
-    # affects rendering only, so changing your mind after reading the scripts
-    # should work.
-    a = settings(count, seconds, voice, fit_label, burn, cover, keep_music,
-                 use_ollama, story, style)
+
+def render(ctx, form_values, scripts, only, progress):
+    """Save whatever is in the boxes, then render all of them or just one."""
+    a = settings(*form_values[2:])
 
     scripts_dir = Path(ctx["scripts_dir"])
-    scripts_dir.mkdir(parents=True, exist_ok=True)
     titles = ctx.get("titles") or [None] * len(ctx["spans"])
     for i, text in enumerate(scripts[:len(ctx["spans"])], 1):
-        # The title lives in the file as a # comment, and the box only ever held
+        # The title lives in the file as a # comment and the box only ever held
         # the spoken words, so put it back rather than losing it on save.
-        body = (text or "").strip()
-        title = titles[i - 1]
-        head = f"# {title}\n\n" if title and body else ""
-        (scripts_dir / f"reel-{i:02d}.txt").write_text(head + body, encoding="utf-8")
+        reels.write_script(scripts_dir, i, titles[i - 1], text)
 
     out_dir, made = reels.build(
-        ctx, a, progress=lambda frac, desc: progress(frac, desc=desc))
+        ctx, a, only=only,
+        progress=lambda frac, desc: progress(frac, desc=desc))
 
     if not made:
-        raise gr.Error("Nothing was rendered. Every script was empty — write at "
-                       "least one and try again.")
+        raise gr.Error("Nothing was rendered — that script was empty. Write "
+                       "something in it and try again.")
 
     mp4s = sorted(Path(out_dir).glob("reel-*.mp4"))
-    files = [str(p) for p in sorted(Path(out_dir).rglob("*")) if p.is_file()]
+    files = [str(f) for f in sorted(Path(out_dir).rglob("*")) if f.is_file()]
 
-    rows = [f"**{len(made)} reels** in `{out_dir}`", ""]
-    for m, mp4 in zip(made, mp4s):
-        rows.append(f"- **{mp4.name}**"
+    rows = [f"**{len(made)} ready** in `{out_dir}`", ""]
+    for m in made:
+        rows.append(f"- **{m['file']}**"
                     + (f" · {m['title']}" if m.get("title") else "")
                     + f" — {m['seconds']:.0f}s, from "
                       f"{reels.hhmmss(m['source_start'])}")
     rows.append(f"\nWorking cache is now "
                 f"{reels.human_size(reels.dir_size(reels.WORK))}. "
                 f"Free it any time with `--clean`.")
-    return str(mp4s[0]) if mp4s else None, files, "\n".join(rows)
+
+    newest = max((Path(out_dir) / m["file"] for m in made),
+                 key=lambda f: f.stat().st_mtime, default=None)
+    return str(newest) if newest else None, files, "\n".join(rows)
+
+
+def make_reels(ctx, *args, progress=gr.Progress()):
+    """Every reel."""
+    if not ctx:
+        raise gr.Error("Press *Get the narration scripts* first.")
+    return render(ctx, args[:FORM_LEN], args[FORM_LEN:], None, progress)
+
+
+def rewrite_one(index):
+    """Button handler that writes reel `index` again, and nothing else."""
+    def run(ctx, *form_values, progress=gr.Progress()):
+        if not ctx or index >= len(ctx["spans"]):
+            raise gr.Error("Press *Get the narration scripts* first.")
+        a = settings(*form_values[2:])
+        progress(0.2, desc=f"Rewriting script {index + 1}")
+        title, text = reels.regenerate_script(ctx, a, index + 1)
+        ctx["scripts"][index] = text
+        ctx.setdefault("titles", [None] * len(ctx["spans"]))[index] = title
+        if not text:
+            return (gr.update(value=""),
+                    f"Reel {index + 1} came back empty. Write it yourself, or "
+                    f"press rewrite again.")
+        return (gr.update(value=text),
+                f"Rewrote reel {index + 1}" + (f" — *{title}*" if title else "")
+                + ". The others are untouched.")
+    return run
+
+
+def render_one(index):
+    """Button handler that renders only reel `index`."""
+    def run(ctx, *args, progress=gr.Progress()):
+        if not ctx or index >= len(ctx["spans"]):
+            raise gr.Error("Press *Get the narration scripts* first.")
+        return render(ctx, args[:FORM_LEN], args[FORM_LEN:], {index + 1}, progress)
+    return run
 
 
 def build_ui():
@@ -174,7 +206,9 @@ def build_ui():
             "**It works in two steps.** First you get the narration scripts to "
             "read and edit — that downloads only the transcript, so it takes "
             "seconds even for a long film. The video itself is fetched only "
-            "when you press the second button."
+            "when you ask for a reel.\n\n"
+            "Each script has its own **Rewrite** and **Make just this reel** "
+            "buttons, so one bad script does not hold up the rest."
         )
 
         job = gr.State()
@@ -199,7 +233,9 @@ def build_ui():
                          "do not connect")
                 style = gr.Dropdown(
                     list(STYLE_LABELS), value=DEFAULT_STYLE_LABEL,
-                    label="How the narration is written")
+                    label="How the narration is written",
+                    info="These come from the styles/ folder — add a text file "
+                         "there and it appears here")
                 use_ollama = gr.Checkbox(
                     value=True,
                     label="Write the narration with a local model (recommended)",
@@ -228,21 +264,40 @@ def build_ui():
 
             with gr.Column(scale=1):
                 notes = gr.Markdown()
-                boxes = [gr.Textbox(label=f"Reel {i + 1}", lines=5, visible=False,
-                                    interactive=True) for i in range(MAX_REELS)]
+                rows, boxes, redo_btns, one_btns = [], [], [], []
+                for i in range(MAX_REELS):
+                    with gr.Group(visible=False) as row:
+                        boxes.append(gr.Textbox(label=f"Reel {i + 1}", lines=6,
+                                                interactive=True))
+                        with gr.Row():
+                            redo_btns.append(gr.Button("↻ Rewrite this script",
+                                                       size="sm"))
+                            one_btns.append(gr.Button("Make just this reel",
+                                                      size="sm",
+                                                      variant="secondary"))
+                    rows.append(row)
+
                 script_files = gr.Files(label="The scripts, as .txt files")
-                step2 = gr.Button("Make the reels", variant="primary", visible=False)
-                preview = gr.Video(label="First reel")
+                step2 = gr.Button("Make all the reels", variant="primary",
+                                  visible=False)
+                preview = gr.Video(label="Finished reel")
                 summary = gr.Markdown()
                 out_files = gr.Files(label="Every reel, subtitle and script")
 
         form = [url, upload, count, seconds, voice, fit, burn, cover, keep_music,
                 use_ollama, story, style]
+        assert len(form) == FORM_LEN
 
         step1.click(get_scripts, inputs=form,
-                    outputs=[job, notes, step2, script_files] + boxes)
+                    outputs=[job, notes, step2, script_files] + rows + boxes)
         step2.click(make_reels, inputs=[job] + form + boxes,
                     outputs=[preview, out_files, summary])
+
+        for i in range(MAX_REELS):
+            redo_btns[i].click(rewrite_one(i), inputs=[job] + form,
+                               outputs=[boxes[i], notes])
+            one_btns[i].click(render_one(i), inputs=[job] + form + boxes,
+                              outputs=[preview, out_files, summary])
     return demo
 
 
